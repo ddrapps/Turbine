@@ -119,6 +119,67 @@ fn credit_on_chain(user_address: &str, amount: f64) -> bool {
     ok
 }
 
+/// Sends a special "cashout" transaction to the node to debit the user.
+/// Uses two separate connections because the node reads only one line per connection.
+fn debit_on_chain(user_address: &str, amount: f64) -> bool {
+    // 1. Get tip on its own connection
+    let tip = {
+        let mut stream = match TcpStream::connect("127.0.0.1:7878") {
+            Ok(s) => s,
+            Err(_) => {
+                println!("Could not connect to node at 127.0.0.1:7878");
+                return false;
+            }
+        };
+        if stream.write_all(b"GET_TIP\n").is_err() {
+            println!("Failed to send GET_TIP");
+            return false;
+        }
+        let mut reader = BufReader::new(stream);
+        let mut tip = String::new();
+        if reader.read_line(&mut tip).is_err() {
+            println!("Failed to read tip");
+            return false;
+        }
+        let tip = tip.trim().to_string();
+        if tip.is_empty() {
+            println!("Empty tip received");
+            return false;
+        }
+        tip
+    };
+
+    // 2. Send the debit transaction on a fresh connection
+    let mut stream = match TcpStream::connect("127.0.0.1:7878") {
+        Ok(s) => s,
+        Err(_) => {
+            println!("Could not connect to node for debit");
+            return false;
+        }
+    };
+
+    // Format: tip|from|to|volume|signature|public_key
+    // Special "cashout" to-address so the node can treat it as a burn/debit
+    let tx_line = format!("{}|{}|cashout|{}||\n", tip, user_address, amount);
+    if stream.write_all(tx_line.as_bytes()).is_err() {
+        println!("Failed to send debit transaction");
+        return false;
+    }
+
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    if reader.read_line(&mut response).is_err() {
+        println!("Failed to read response from node");
+        return false;
+    }
+
+    let ok = response.trim() == "OK";
+    if !ok {
+        println!("Node rejected debit: {}", response.trim());
+    }
+    ok
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -222,17 +283,27 @@ fn main() {
 
                     cashouts.push(Cashout {
                         id,
-                        user_chain_address: user,
+                        user_chain_address: user.clone(),
                         coin_amount,
                         fee_percent,
                         fee_sol,
                         sol_sent: net_sol,
                         destination_sol_address: dest,
-                        status: "paid".to_string(),
+                        status: "pending".to_string(),
                         timestamp: now,
                     });
                     save_cashouts(&cashouts);
-                    println!("Cashout #{} logged. SOL sent: {:.6}", id, net_sol);
+                    println!("Cashout #{} logged. Will debit: {:.6}", id, coin_amount);
+
+                    if debit_on_chain(&user, coin_amount) {
+                        if let Some(c) = cashouts.iter_mut().find(|c| c.id == id) {
+                            c.status = "paid".to_string();
+                        }
+                        save_cashouts(&cashouts);
+                        println!("Debited {:.6} from {} on chain. SOL to send: {:.6}", coin_amount, user, net_sol);
+                    } else {
+                        println!("Logged but failed to debit on chain (is the node running on 127.0.0.1:7878?)");
+                    }
                 }
                 "list" => {
                     let cashouts = load_cashouts();
