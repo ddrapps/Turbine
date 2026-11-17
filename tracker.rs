@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
+use ed25519_dalek::{SigningKey, VerifyingKey};
+use hex;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Deposit {
@@ -58,10 +60,20 @@ fn next_id<T>(items: &[T], get_id: fn(&T) -> u64) -> u64 {
     items.iter().map(get_id).max().unwrap_or(0) + 1
 }
 
+fn load_or_create_key() -> SigningKey {
+    if let Ok(bytes) = fs::read("wallet.key") {
+        if bytes.len() == 32 {
+            return SigningKey::from_bytes(&bytes.try_into().unwrap());
+        }
+    }
+    let mut csprng = rand::rngs::OsRng;
+    let key = SigningKey::generate(&mut csprng);
+    fs::write("wallet.key", key.to_bytes()).unwrap();
+    key
+}
+
 /// Sends a special "deposit" transaction to the node to credit the user.
-/// Uses two separate connections because the node reads only one line per connection.
 fn credit_on_chain(user_address: &str, amount: f64) -> bool {
-    // 1. Get tip on its own connection
     let tip = {
         let mut stream = match TcpStream::connect("127.0.0.1:7878") {
             Ok(s) => s,
@@ -88,7 +100,6 @@ fn credit_on_chain(user_address: &str, amount: f64) -> bool {
         tip
     };
 
-    // 2. Send the credit transaction on a fresh connection
     let mut stream = match TcpStream::connect("127.0.0.1:7878") {
         Ok(s) => s,
         Err(_) => {
@@ -97,8 +108,6 @@ fn credit_on_chain(user_address: &str, amount: f64) -> bool {
         }
     };
 
-    // Format: tip|from|to|volume|signature|public_key
-    // Empty signature and public_key are allowed for the special "deposit" from-address
     let tx_line = format!("{}|deposit|{}|{}||\n", tip, user_address, amount);
     if stream.write_all(tx_line.as_bytes()).is_err() {
         println!("Failed to send credit transaction");
@@ -119,10 +128,8 @@ fn credit_on_chain(user_address: &str, amount: f64) -> bool {
     ok
 }
 
-/// Sends a special "cashout" transaction to the node to debit the user.
-/// Uses two separate connections because the node reads only one line per connection.
+/// Sends a signed debit transaction to the node.
 fn debit_on_chain(user_address: &str, amount: f64) -> bool {
-    // 1. Get tip on its own connection
     let tip = {
         let mut stream = match TcpStream::connect("127.0.0.1:7878") {
             Ok(s) => s,
@@ -149,7 +156,19 @@ fn debit_on_chain(user_address: &str, amount: f64) -> bool {
         tip
     };
 
-    // 2. Send the debit transaction on a fresh connection
+    // Load the signing key (same as wallet)
+    let signing_key = load_or_create_key();
+    let verifying_key = signing_key.verifying_key();
+    let pub_hex = hex::encode(verifying_key.as_bytes());
+
+    // The from address must match the public key we are signing with
+    let from_addr = pub_hex.clone();
+
+    // Build and sign the message the same way the wallet does
+    let msg = format!("{}{}{}", from_addr, "cashout", amount);
+    let signature = signing_key.sign(msg.as_bytes());
+    let sig_hex = hex::encode(signature.to_bytes());
+
     let mut stream = match TcpStream::connect("127.0.0.1:7878") {
         Ok(s) => s,
         Err(_) => {
@@ -158,9 +177,7 @@ fn debit_on_chain(user_address: &str, amount: f64) -> bool {
         }
     };
 
-    // Format: tip|from|to|volume|signature|public_key
-    // Special "cashout" to-address so the node can treat it as a burn/debit
-    let tx_line = format!("{}|{}|cashout|{}||\n", tip, user_address, amount);
+    let tx_line = format!("{}|{}|cashout|{}|{}|{}\n", tip, from_addr, amount, sig_hex, pub_hex);
     if stream.write_all(tx_line.as_bytes()).is_err() {
         println!("Failed to send debit transaction");
         return false;
@@ -231,7 +248,6 @@ fn main() {
                     println!("Deposit #{} logged. Will credit: {:.6}", id, credited);
 
                     if credit_on_chain(&user, credited) {
-                        // Update status to credited
                         if let Some(d) = deposits.iter_mut().find(|d| d.id == id) {
                             d.status = "credited".to_string();
                         }
