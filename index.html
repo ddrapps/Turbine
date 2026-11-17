@@ -1,0 +1,68 @@
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Web Wallet</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; }
+    button { padding: 8px 16px; margin: 5px; cursor: pointer; }
+    #output { background: #f4f4f4; padding: 15px; margin-top: 20px; white-space: pre-wrap; min-height: 100px; border-radius: 4px; }
+    input { padding: 6px; margin: 5px; width: 200px; }
+  </style>
+</head>
+<body>
+  <h2>Web Wallet</h2>
+  <p>Node must be running on <code>127.0.0.1:7878</code></p>
+
+  <div>
+    <button onclick="getBalance()">Refresh Balance</button>
+    <button onclick="getChain()">Show Chain / History</button>
+  </div>
+
+  <h3>Send</h3>
+  <input id="to" placeholder="To address (public key)">
+  <input id="amount" placeholder="Amount" type="number" step="0.01">
+  <button onclick="sendTx()">Send</button>
+
+  <div id="output">Click a button to load data from the node.</div>
+
+  <script>
+    const NODE = "http://127.0.0.1:7878";
+
+    async function getBalance() {
+      try {
+        const res = await fetch(NODE, {
+          method: "POST",
+          body: "GET_BALANCES\n"
+        });
+        const text = await res.text();
+        document.getElementById("output").textContent = "Balances:\n" + text;
+      } catch (e) {
+        document.getElementById("output").textContent = "Error: " + e.message + "\n\nMake sure the node is running.";
+      }
+    }
+
+    async function getChain() {
+      try {
+        const res = await fetch(NODE, {
+          method: "POST",
+          body: "GET_CHAIN\n"
+        });
+        const text = await res.text();
+        document.getElementById("output").textContent = "Chain:\n" + text;
+      } catch (e) {
+        document.getElementById("output").textContent = "Error: " + e.message;
+      }
+    }
+
+    async function sendTx() {
+      const to = document.getElementById("to").value.trim();
+      const amount = document.getElementById("amount").value.trim();
+      if (!to || !amount) {
+        alert("Enter both address and amount");
+        return;
+      }
+      document.getElementById("output").textContent = "Send from web wallet is not fully wired yet.\nUse the CLI wallet for now:\n\ncargo run --bin wallet -- send " + to + " " + amount;
+    }
+  </script>
+</body>
+</html>
