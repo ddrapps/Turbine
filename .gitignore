@@ -48,3 +48,5 @@ chain.json
 last_reward.txt
 signed_tx.txt
 *.key
+deposits.json
+cashouts.json
