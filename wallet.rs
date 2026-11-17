@@ -68,7 +68,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!("Usage:");
-        println!("  cargo run --bin wallet -- balance");
+        println!("  cargo run --bin wallet -- balance [address]");
         println!("  cargo run --bin wallet -- history");
         println!("  cargo run --bin wallet -- send <to> <amount>");
         println!("  cargo run --bin wallet -- addcontact <name> <address>");
@@ -77,6 +77,12 @@ fn main() {
 
     match args[1].as_str() {
         "balance" => {
+            let target = if args.len() > 2 {
+                resolve_address(&args[2], &address_book)
+            } else {
+                pub_hex.clone()
+            };
+
             match connect(&node) {
                 Ok(mut stream) => {
                     if stream.write_all(b"GET_BALANCES\n").is_err() {
@@ -90,10 +96,18 @@ fn main() {
                         return;
                     }
                     if let Ok(balances) = serde_json::from_str::<Value>(response.trim()) {
-                        if let Some(bal) = balances.get(&pub_hex).and_then(|v| v.as_f64()) {
-                            println!("Your balance: {}", bal);
+                        if let Some(bal) = balances.get(&target).and_then(|v| v.as_f64()) {
+                            if target == pub_hex {
+                                println!("Your balance: {}", bal);
+                            } else {
+                                println!("Balance of {}: {}", target, bal);
+                            }
                         } else {
-                            println!("Your balance: 0.0");
+                            if target == pub_hex {
+                                println!("Your balance: 0.0");
+                            } else {
+                                println!("Balance of {}: 0.0", target);
+                            }
                         }
                     } else {
                         println!("Could not parse balances");
