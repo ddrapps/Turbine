@@ -56,8 +56,8 @@ fn verify_signature(tx: &Transaction) -> bool {
         Err(_) => return false,
     };
     let signature = Signature::from_bytes(
-    sig_bytes.as_slice().try_into().unwrap_or(&[0u8; 64])
-);
+        sig_bytes.as_slice().try_into().unwrap_or(&[0u8; 64])
+    );
     let msg = format!("{}{}{}", tx.from, tx.to, tx.volume);
     verifying_key.verify(msg.as_bytes(), &signature).is_ok()
 }
