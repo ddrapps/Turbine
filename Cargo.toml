@@ -15,6 +15,10 @@ path = "wallet.rs"
 name = "webwallet"
 path = "webwallet.rs"
 
+[[bin]]
+name = "tracker"
+path = "tracker.rs"
+
 [dependencies]
 chrono = "0.4.45"
 ed25519-dalek = "3"
