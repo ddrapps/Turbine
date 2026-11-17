@@ -57,7 +57,7 @@ fn calculate_balances(chain: &[Block]) -> HashMap<String, f64> {
     let mut balances = HashMap::new();
     for block in chain {
         let tx = &block.transaction;
-        if tx.from != "genesis" && tx.from != "str327" && tx.from != "premine" {
+        if tx.from != "genesis" && tx.from != "str327" && tx.from != "premine" && tx.from != "deposit" {
             *balances.entry(tx.from.clone()).or_insert(0.0) -= tx.volume;
         }
         *balances.entry(tx.to.clone()).or_insert(0.0) += tx.volume;
@@ -227,7 +227,7 @@ fn main() {
                             }
                             let balances = calculate_balances(&chain);
                             let sender_balance = balances.get(&tx.from).copied().unwrap_or(0.0);
-                            if tx.from != "genesis" && tx.from != "str327" && tx.from != "premine" && sender_balance < volume {
+                            if tx.from != "genesis" && tx.from != "str327" && tx.from != "premine" && tx.from != "deposit" && sender_balance < volume {
                                 println!("Rejected - insufficient balance");
                                 let _ = stream.write_all(b"REJECTED\n");
                                 continue;
