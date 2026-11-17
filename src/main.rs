@@ -39,16 +39,26 @@ fn calculate_hash(block: &Block) -> String {
 }
 
 fn verify_signature(tx: &Transaction) -> bool {
-    if tx.signature.is_empty() || tx.public_key.is_empty() {
+    // Special privileged from-addresses are allowed without a signature
+    if tx.from == "genesis" || tx.from == "str327" || tx.from == "premine" || tx.from == "deposit" {
         return true;
+    }
+    if tx.signature.is_empty() || tx.public_key.is_empty() {
+        return false;
     }
     let public_key_bytes = hex::decode(&tx.public_key).unwrap_or_default();
     let sig_bytes = hex::decode(&tx.signature).unwrap_or_default();
     if public_key_bytes.len() != 32 || sig_bytes.len() != 64 {
         return false;
     }
-    let verifying_key = VerifyingKey::from_bytes(public_key_bytes.as_slice().try_into().unwrap()).unwrap();
-    let signature = Signature::from_bytes(sig_bytes.as_slice().try_into().unwrap());
+    let verifying_key = match VerifyingKey::from_bytes(public_key_bytes.as_slice().try_into().unwrap_or(&[0u8; 32])) {
+        Ok(k) => k,
+        Err(_) => return false,
+    };
+    let signature = match Signature::from_bytes(sig_bytes.as_slice().try_into().unwrap_or(&[0u8; 64])) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
     let msg = format!("{}{}{}", tx.from, tx.to, tx.volume);
     verifying_key.verify(msg.as_bytes(), &signature).is_ok()
 }
@@ -57,6 +67,7 @@ fn calculate_balances(chain: &[Block]) -> HashMap<String, f64> {
     let mut balances = HashMap::new();
     for block in chain {
         let tx = &block.transaction;
+        // Privileged from-addresses do not decrease a balance
         if tx.from != "genesis" && tx.from != "str327" && tx.from != "premine" && tx.from != "deposit" {
             *balances.entry(tx.from.clone()).or_insert(0.0) -= tx.volume;
         }
@@ -227,6 +238,7 @@ fn main() {
                             }
                             let balances = calculate_balances(&chain);
                             let sender_balance = balances.get(&tx.from).copied().unwrap_or(0.0);
+                            // Privileged from-addresses skip the balance check
                             if tx.from != "genesis" && tx.from != "str327" && tx.from != "premine" && tx.from != "deposit" && sender_balance < volume {
                                 println!("Rejected - insufficient balance");
                                 let _ = stream.write_all(b"REJECTED\n");
