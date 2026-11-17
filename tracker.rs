@@ -58,15 +58,18 @@ fn next_id<T>(items: &[T], get_id: fn(&T) -> u64) -> u64 {
     items.iter().map(get_id).max().unwrap_or(0) + 1
 }
 
+/// Sends a special "deposit" transaction to the node to credit the user.
+/// The node treats "deposit" as a privileged from-address that does not require a signature or balance check.
 fn credit_on_chain(user_address: &str, amount: f64) -> bool {
     let mut stream = match TcpStream::connect("127.0.0.1:7878") {
         Ok(s) => s,
         Err(_) => {
-            println!("Could not connect to node");
+            println!("Could not connect to node at 127.0.0.1:7878");
             return false;
         }
     };
 
+    // Get current tip
     if stream.write_all(b"GET_TIP\n").is_err() {
         println!("Failed to send GET_TIP");
         return false;
@@ -79,20 +82,30 @@ fn credit_on_chain(user_address: &str, amount: f64) -> bool {
         return false;
     }
     let tip = tip.trim().to_string();
+    if tip.is_empty() {
+        println!("Empty tip received");
+        return false;
+    }
 
+    // Format: tip|from|to|volume|signature|public_key
+    // Empty signature and public_key are allowed for the special "deposit" from-address
     let tx_line = format!("{}|deposit|{}|{}||\n", tip, user_address, amount);
     if stream.write_all(tx_line.as_bytes()).is_err() {
-        println!("Failed to send credit tx");
+        println!("Failed to send credit transaction");
         return false;
     }
 
     let mut response = String::new();
     if reader.read_line(&mut response).is_err() {
-        println!("Failed to read response");
+        println!("Failed to read response from node");
         return false;
     }
 
-    response.trim() == "OK"
+    let ok = response.trim() == "OK";
+    if !ok {
+        println!("Node rejected credit: {}", response.trim());
+    }
+    ok
 }
 
 fn main() {
@@ -139,16 +152,21 @@ fn main() {
                         fee_percent,
                         fee_sol,
                         credited_coin: credited,
-                        status: "credited".to_string(),
+                        status: "pending".to_string(),
                         timestamp: now,
                     });
                     save_deposits(&deposits);
-                    println!("Deposit #{} logged. Credited: {:.6}", id, credited);
+                    println!("Deposit #{} logged. Will credit: {:.6}", id, credited);
 
                     if credit_on_chain(&user, credited) {
+                        // Update status to credited
+                        if let Some(d) = deposits.iter_mut().find(|d| d.id == id) {
+                            d.status = "credited".to_string();
+                        }
+                        save_deposits(&deposits);
                         println!("Credited {:.6} to {} on chain", credited, user);
                     } else {
-                        println!("Logged but failed to credit on chain (is the node running?)");
+                        println!("Logged but failed to credit on chain (is the node running on 127.0.0.1:7878?)");
                     }
                 }
                 "list" => {
