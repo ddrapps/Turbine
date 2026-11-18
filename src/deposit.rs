@@ -7,14 +7,13 @@ use std::net::TcpStream;
 pub struct SupportedAsset {
     pub chain: String,
     pub symbol: String,
-    pub contract_address: String, // real public address
+    pub contract_address: String,
     pub decimals: u8,
 }
 
 #[derive(Debug, Clone)]
 pub struct DepositWatcher {
     pub supported: Vec<SupportedAsset>,
-    // placeholder deposit addresses for testing (replace later)
     pub deposit_addresses: HashMap<String, String>,
 }
 
@@ -64,7 +63,6 @@ impl DepositWatcher {
         }
     }
 
-    /// Simulate detecting a deposit (replace with real RPC polling later)
     pub fn simulate_deposit(&self, chain: &str, symbol: &str, amount: f64, user_address: &str) -> Option<DetectedDeposit> {
         let asset = self.supported.iter().find(|a| a.chain == chain && a.symbol == symbol)?;
         Some(DetectedDeposit {
@@ -73,7 +71,7 @@ impl DepositWatcher {
             amount,
             user_address: user_address.to_string(),
             contract_address: asset.contract_address.clone(),
-            sol_value_after_fee: amount * 0.99, // 1% fee mock
+            sol_value_after_fee: amount * 0.99,
         })
     }
 }
@@ -88,38 +86,47 @@ pub struct DetectedDeposit {
     pub sol_value_after_fee: f64,
 }
 
-/// Credits the user on your chain using the privileged "deposit" sender.
-/// Returns true if the node accepted the block.
-pub fn credit_on_chain(deposit: &DetectedDeposit) -> bool {
-    // 1. Get current tip
-    let mut stream = match TcpStream::connect("127.0.0.1:7878") {
-        Ok(s) => s,
-        Err(_) => {
-            println!("Node not running");
+/// Single shared function that credits a user on the chain.
+/// Used by both the deposit watcher and the tracker CLI.
+/// Uses the privileged "deposit" sender (no signature required).
+pub fn credit_on_chain(user_address: &str, amount: f64) -> bool {
+    let tip = {
+        let mut stream = match TcpStream::connect("127.0.0.1:7878") {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        if stream.write_all(b"GET_TIP\n").is_err() {
             return false;
         }
+        let mut reader = BufReader::new(stream);
+        let mut tip = String::new();
+        if reader.read_line(&mut tip).is_err() {
+            return false;
+        }
+        tip.trim().to_string()
     };
-    let _ = stream.write_all(b"GET_TIP\n");
-    let mut reader = BufReader::new(stream.try_clone().unwrap());
-    let mut tip = String::new();
-    if reader.read_line(&mut tip).is_err() {
+    if tip.is_empty() {
         return false;
     }
-    let tip = tip.trim();
 
-    // 2. Build privileged deposit transaction
-    // Format: previous_hash|from|to|volume|signature|public_key
-    let volume = deposit.sol_value_after_fee; // already has 1% removed
-    let msg = format!("{}|deposit|{}|{}||\n", tip, deposit.user_address, volume);
-
-    // 3. Send it
-    let _ = stream.write_all(msg.as_bytes());
-    let mut response = String::new();
-    if reader.read_line(&mut response).is_ok() && response.trim() == "OK" {
-        println!("Credited {} to {}", volume, deposit.user_address);
-        true
-    } else {
-        println!("Credit rejected: {}", response.trim());
-        false
+    let mut stream = match TcpStream::connect("127.0.0.1:7878") {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let tx_line = format!("{}|deposit|{}|{}||\n", tip, user_address, amount);
+    if stream.write_all(tx_line.as_bytes()).is_err() {
+        return false;
     }
+
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    if reader.read_line(&mut response).is_err() {
+        return false;
+    }
+    response.trim() == "OK"
+}
+
+/// Convenience wrapper that uses the fee-adjusted amount from a DetectedDeposit.
+pub fn credit_deposit(deposit: &DetectedDeposit) -> bool {
+    credit_on_chain(&deposit.user_address, deposit.sol_value_after_fee)
 }
