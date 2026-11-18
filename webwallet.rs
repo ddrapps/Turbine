@@ -6,12 +6,13 @@ use std::net::{TcpListener, TcpStream};
 use std::thread;
 
 fn load_signing_key() -> Option<SigningKey> {
-    if let Ok(bytes) = fs::read("wallet.key") {
-        if bytes.len() == 32 {
-            return SigningKey::from_bytes(bytes.as_slice().try_into().ok()?);
-        }
+    let bytes = fs::read("wallet.key").ok()?;
+    if bytes.len() != 32 {
+        return None;
     }
-    None
+    let mut key_bytes = [0u8; 32];
+    key_bytes.copy_from_slice(&bytes);
+    Some(SigningKey::from_bytes(&key_bytes))
 }
 
 fn get_address() -> String {
