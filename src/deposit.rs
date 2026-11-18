@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SupportedAsset {
@@ -84,4 +86,40 @@ pub struct DetectedDeposit {
     pub user_address: String,
     pub contract_address: String,
     pub sol_value_after_fee: f64,
+}
+
+/// Credits the user on your chain using the privileged "deposit" sender.
+/// Returns true if the node accepted the block.
+pub fn credit_on_chain(deposit: &DetectedDeposit) -> bool {
+    // 1. Get current tip
+    let mut stream = match TcpStream::connect("127.0.0.1:7878") {
+        Ok(s) => s,
+        Err(_) => {
+            println!("Node not running");
+            return false;
+        }
+    };
+    let _ = stream.write_all(b"GET_TIP\n");
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut tip = String::new();
+    if reader.read_line(&mut tip).is_err() {
+        return false;
+    }
+    let tip = tip.trim();
+
+    // 2. Build privileged deposit transaction
+    // Format: previous_hash|from|to|volume|signature|public_key
+    let volume = deposit.sol_value_after_fee; // already has 1% removed
+    let msg = format!("{}|deposit|{}|{}||\n", tip, deposit.user_address, volume);
+
+    // 3. Send it
+    let _ = stream.write_all(msg.as_bytes());
+    let mut response = String::new();
+    if reader.read_line(&mut response).is_ok() && response.trim() == "OK" {
+        println!("Credited {} to {}", volume, deposit.user_address);
+        true
+    } else {
+        println!("Credit rejected: {}", response.trim());
+        false
+    }
 }
