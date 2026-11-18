@@ -71,7 +71,7 @@ impl DepositWatcher {
             amount,
             user_address: user_address.to_string(),
             contract_address: asset.contract_address.clone(),
-            sol_value_after_fee: amount * 0.99,
+            usdc_value_after_fee: amount * 0.99,
         })
     }
 }
@@ -83,7 +83,7 @@ pub struct DetectedDeposit {
     pub amount: f64,
     pub user_address: String,
     pub contract_address: String,
-    pub sol_value_after_fee: f64,
+    pub usdc_value_after_fee: f64,
 }
 
 /// Single shared function that credits a user on the chain.
@@ -128,5 +128,5 @@ pub fn credit_on_chain(user_address: &str, amount: f64) -> bool {
 
 /// Convenience wrapper that uses the fee-adjusted amount from a DetectedDeposit.
 pub fn credit_deposit(deposit: &DetectedDeposit) -> bool {
-    credit_on_chain(&deposit.user_address, deposit.sol_value_after_fee)
+    credit_on_chain(&deposit.user_address, deposit.usdc_value_after_fee)
 }
