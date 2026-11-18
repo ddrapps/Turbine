@@ -12,9 +12,9 @@ struct Deposit {
     user_chain_address: String,
     incoming_coin: String,
     incoming_amount: f64,
-    sol_received: f64,
+    usdc_received: f64,
     fee_percent: f64,
-    fee_sol: f64,
+    fee_usdc: f64,
     credited_coin: f64,
     status: String,
     timestamp: String,
@@ -26,11 +26,23 @@ struct Cashout {
     user_chain_address: String,
     coin_amount: f64,
     fee_percent: f64,
-    fee_sol: f64,
-    sol_sent: f64,
-    destination_sol_address: String,
+    fee_usdc: f64,
+    usdc_sent: f64,
+    destination_usdc_address: String,
     status: String,
     timestamp: String,
+}
+
+fn load_operator_address() -> String {
+    let content = fs::read_to_string("str.env").unwrap_or_default();
+    for line in content.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim() == "STR327_ADDRESS" {
+                return value.trim().to_string();
+            }
+        }
+    }
+    "operator".to_string()
 }
 
 fn load_deposits() -> Vec<Deposit> {
@@ -89,12 +101,13 @@ fn debit_on_chain(user_address: &str, amount: f64) -> bool {
 }
 
 fn main() {
+    let operator = load_operator_address();
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         println!("Usage:");
-        println!("  cargo run --bin tracker -- deposit add <user_addr> <coin> <amount> <sol_received>");
+        println!("  cargo run --bin tracker -- deposit add <user_addr> <coin> <amount> <usdc_received>");
         println!("  cargo run --bin tracker -- deposit list");
-        println!("  cargo run --bin tracker -- cashout add <user_addr> <coin_amount> <sol_sent> <dest_sol_addr>");
+        println!("  cargo run --bin tracker -- cashout add <user_addr> <coin_amount> <usdc_sent> <dest_usdc_addr>");
         println!("  cargo run --bin tracker -- cashout list");
         return;
     }
@@ -104,30 +117,38 @@ fn main() {
             if args.len() < 3 { println!("deposit add or list"); return; }
             match args[2].as_str() {
                 "add" => {
-                    if args.len() < 7 { println!("deposit add <user_addr> <coin> <amount> <sol_received>"); return; }
+                    if args.len() < 7 { println!("deposit add <user_addr> <coin> <amount> <usdc_received>"); return; }
                     let user = args[3].clone();
                     let coin = args[4].clone();
                     let amount: f64 = args[5].parse().unwrap_or(0.0);
-                    let sol: f64 = args[6].parse().unwrap_or(0.0);
+                    let usdc: f64 = args[6].parse().unwrap_or(0.0);
                     let fee_percent = 1.0;
-                    let fee_sol = sol * (fee_percent / 100.0);
-                    let credited = sol - fee_sol;
+                    let fee_usdc = usdc * (fee_percent / 100.0);
+                    let credited = usdc - fee_usdc;
 
                     let mut deposits = load_deposits();
                     let id = next_id(&deposits, |d| d.id);
                     let now = chrono::Utc::now().to_rfc3339();
                     deposits.push(Deposit {
                         id, user_chain_address: user.clone(), incoming_coin: coin,
-                        incoming_amount: amount, sol_received: sol, fee_percent,
-                        fee_sol, credited_coin: credited, status: "pending".into(), timestamp: now,
+                        incoming_amount: amount, usdc_received: usdc, fee_percent,
+                        fee_usdc, credited_coin: credited, status: "pending".into(), timestamp: now,
                     });
                     save_deposits(&deposits);
-                    println!("Deposit #{} logged. Will credit: {:.6}", id, credited);
+                    println!("Deposit #{} logged. Will credit: {:.6} (fee {:.6} to operator)", id, credited, fee_usdc);
 
-                    if credit_on_chain(&user, credited) {
+                    let user_ok = credit_on_chain(&user, credited);
+                    let fee_ok = if fee_usdc > 0.0 { credit_on_chain(&operator, fee_usdc) } else { true };
+
+                    if user_ok {
                         if let Some(d) = deposits.iter_mut().find(|d| d.id == id) { d.status = "credited".into(); }
                         save_deposits(&deposits);
                         println!("Credited {:.6} to {} on chain", credited, user);
+                        if fee_ok {
+                            println!("Fee {:.6} USDC credited to operator {}", fee_usdc, operator);
+                        } else {
+                            println!("Warning: failed to credit fee to operator");
+                        }
                     } else {
                         println!("Logged but failed to credit on chain");
                     }
@@ -137,9 +158,9 @@ fn main() {
                     if deposits.is_empty() { println!("No deposits."); }
                     else {
                         for d in deposits {
-                            println!("#{} | {} | {} {} → {:.6} SOL | fee {:.6} | credited {:.6} | {}",
+                            println!("#{} | {} | {} {} → {:.6} USDC | fee {:.6} | credited {:.6} | {}",
                                 d.id, d.user_chain_address, d.incoming_amount, d.incoming_coin,
-                                d.sol_received, d.fee_sol, d.credited_coin, d.status);
+                                d.usdc_received, d.fee_usdc, d.credited_coin, d.status);
                         }
                     }
                 }
@@ -150,30 +171,38 @@ fn main() {
             if args.len() < 3 { println!("cashout add or list"); return; }
             match args[2].as_str() {
                 "add" => {
-                    if args.len() < 7 { println!("cashout add <user_addr> <coin_amount> <sol_sent> <dest_sol_addr>"); return; }
+                    if args.len() < 7 { println!("cashout add <user_addr> <coin_amount> <usdc_sent> <dest_usdc_addr>"); return; }
                     let user = args[3].clone();
                     let coin_amount: f64 = args[4].parse().unwrap_or(0.0);
-                    let sol_sent: f64 = args[5].parse().unwrap_or(0.0);
+                    let usdc_sent: f64 = args[5].parse().unwrap_or(0.0);
                     let dest = args[6].clone();
                     let fee_percent = 1.0;
-                    let fee_sol = sol_sent * (fee_percent / 100.0);
-                    let net_sol = sol_sent - fee_sol;
+                    let fee_usdc = usdc_sent * (fee_percent / 100.0);
+                    let net_usdc = usdc_sent - fee_usdc;
 
                     let mut cashouts = load_cashouts();
                     let id = next_id(&cashouts, |c| c.id);
                     let now = chrono::Utc::now().to_rfc3339();
                     cashouts.push(Cashout {
                         id, user_chain_address: user.clone(), coin_amount, fee_percent,
-                        fee_sol, sol_sent: net_sol, destination_sol_address: dest,
+                        fee_usdc, usdc_sent: net_usdc, destination_usdc_address: dest,
                         status: "pending".into(), timestamp: now,
                     });
                     save_cashouts(&cashouts);
-                    println!("Cashout #{} logged. Will debit: {:.6}", id, coin_amount);
+                    println!("Cashout #{} logged. Will debit: {:.6} (fee {:.6} to operator)", id, coin_amount, fee_usdc);
 
                     if debit_on_chain(&user, coin_amount) {
                         if let Some(c) = cashouts.iter_mut().find(|c| c.id == id) { c.status = "paid".into(); }
                         save_cashouts(&cashouts);
-                        println!("Debited {:.6} from {} on chain. SOL to send: {:.6}", coin_amount, user, net_sol);
+                        println!("Debited {:.6} from {} on chain. USDC to send: {:.6}", coin_amount, user, net_usdc);
+
+                        if fee_usdc > 0.0 {
+                            if credit_on_chain(&operator, fee_usdc) {
+                                println!("Fee {:.6} USDC credited to operator {}", fee_usdc, operator);
+                            } else {
+                                println!("Warning: failed to credit fee to operator");
+                            }
+                        }
                     } else {
                         println!("Logged but failed to debit on chain");
                     }
@@ -183,9 +212,9 @@ fn main() {
                     if cashouts.is_empty() { println!("No cashouts."); }
                     else {
                         for c in cashouts {
-                            println!("#{} | {} | {:.6} coin → {:.6} SOL | fee {:.6} | to {} | {}",
-                                c.id, c.user_chain_address, c.coin_amount, c.sol_sent,
-                                c.fee_sol, c.destination_sol_address, c.status);
+                            println!("#{} | {} | {:.6} coin → {:.6} USDC | fee {:.6} | to {} | {}",
+                                c.id, c.user_chain_address, c.coin_amount, c.usdc_sent,
+                                c.fee_usdc, c.destination_usdc_address, c.status);
                         }
                     }
                 }
