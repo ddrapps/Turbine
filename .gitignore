@@ -51,3 +51,4 @@ signed_tx.txt
 deposits.json
 cashouts.json
 fee_wallet.key
+fee_wallet.json
