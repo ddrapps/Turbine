@@ -3,6 +3,9 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 
+mod deposit;
+use deposit::credit_on_chain;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Deposit {
     id: u64,
@@ -56,33 +59,6 @@ fn save_cashouts(cashouts: &[Cashout]) {
 
 fn next_id<T>(items: &[T], get_id: fn(&T) -> u64) -> u64 {
     items.iter().map(get_id).max().unwrap_or(0) + 1
-}
-
-fn credit_on_chain(user_address: &str, amount: f64) -> bool {
-    let tip = {
-        let mut stream = match TcpStream::connect("127.0.0.1:7878") {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        if stream.write_all(b"GET_TIP\n").is_err() { return false; }
-        let mut reader = BufReader::new(stream);
-        let mut tip = String::new();
-        if reader.read_line(&mut tip).is_err() { return false; }
-        tip.trim().to_string()
-    };
-    if tip.is_empty() { return false; }
-
-    let mut stream = match TcpStream::connect("127.0.0.1:7878") {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let tx_line = format!("{}|deposit|{}|{}||\n", tip, user_address, amount);
-    if stream.write_all(tx_line.as_bytes()).is_err() { return false; }
-
-    let mut reader = BufReader::new(stream);
-    let mut response = String::new();
-    if reader.read_line(&mut response).is_err() { return false; }
-    response.trim() == "OK"
 }
 
 fn debit_on_chain(user_address: &str, amount: f64) -> bool {
