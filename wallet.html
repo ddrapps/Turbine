@@ -6,7 +6,7 @@
     button, input { padding: 8px 12px; margin: 4px; }
     #out { background: #f4f4f4; padding: 12px; min-height: 150px; white-space: pre-wrap; font-family: monospace; border-radius: 4px; }
     .row { margin: 12px 0; }
-    #address { font-family: monospace; word-break: break-all; }
+    #address, #solana-address { font-family: monospace; word-break: break-all; }
     #credits-applied { font-size: 1.4em; font-weight: bold; color: #2a7; }
     #cashout-result { margin-top: 12px; }
     #login-box, #confirm-box, #newkey-box { border: 1px solid #ccc; padding: 16px; border-radius: 6px; margin-bottom: 20px; }
@@ -47,6 +47,12 @@
     </div>
 
     <div class="row">
+      <strong>Send SOL here (deposit address):</strong><br>
+      <span id="solana-address"></span>
+      <button onclick="copySolana()">Copy</button>
+    </div>
+
+    <div class="row">
       <strong>shesaysyes.ca Credits Applied:</strong>
       <div id="credits-applied">0.000000</div>
       <p style="color:#666;font-size:0.9em;">Credits are applied immediately. This resets to zero on next login.</p>
@@ -79,6 +85,7 @@
   <script>
     let myAddress = "";
     let myPrivateKey = "";
+    let mySolanaAddress = "";
     let pendingEmail = "";
 
     async function checkEmail() {
@@ -143,6 +150,7 @@
           document.getElementById("new-address").textContent = parts[1];
           myPrivateKey = parts[0];
           myAddress = parts[1];
+          mySolanaAddress = parts[2] || "";
           document.getElementById("confirm-box").style.display = "none";
           document.getElementById("newkey-box").style.display = "block";
         } else {
@@ -157,6 +165,7 @@
       document.getElementById("newkey-box").style.display = "none";
       document.getElementById("wallet-box").style.display = "block";
       document.getElementById("address").textContent = myAddress;
+      document.getElementById("solana-address").textContent = mySolanaAddress;
       loadBalance();
     }
 
@@ -173,11 +182,14 @@
         });
         const text = await res.text();
         if (res.ok) {
-          myAddress = text.trim();
+          const parts = text.trim().split("|");
+          myAddress = parts[0];
+          mySolanaAddress = parts[1] || "";
           myPrivateKey = pk;
           document.getElementById("returning-box").style.display = "none";
           document.getElementById("wallet-box").style.display = "block";
           document.getElementById("address").textContent = myAddress;
+          document.getElementById("solana-address").textContent = mySolanaAddress;
           loadBalance();
         } else {
           document.getElementById("returning-msg").textContent = text;
@@ -187,9 +199,14 @@
       }
     }
 
+    function copySolana() {
+      navigator.clipboard.writeText(mySolanaAddress);
+    }
+
     function logout() {
       myAddress = "";
       myPrivateKey = "";
+      mySolanaAddress = "";
       pendingEmail = "";
       document.getElementById("login-box").style.display = "block";
       document.getElementById("wallet-box").style.display = "none";

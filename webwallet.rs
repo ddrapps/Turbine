@@ -13,6 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
+use solana_sdk::signature::{Keypair, Signer};
 
 fn load_users() -> HashMap<String, String> {
     match fs::read_to_string("/data/users.json") {
@@ -24,6 +25,19 @@ fn load_users() -> HashMap<String, String> {
 fn save_users(users: &HashMap<String, String>) {
     if let Ok(json) = serde_json::to_string_pretty(users) {
         let _ = fs::write("/data/users.json", json);
+    }
+}
+
+fn load_solana_keys() -> HashMap<String, String> {
+    match fs::read_to_string("/data/solana_keys.json") {
+        Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn save_solana_keys(keys: &HashMap<String, String>) {
+    if let Ok(json) = serde_json::to_string_pretty(keys) {
+        let _ = fs::write("/data/solana_keys.json", json);
     }
 }
 
@@ -142,7 +156,7 @@ fn handle_cashout(address: &str, amount_str: &str) -> String {
     }
 }
 
-fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>>>, pins: Arc<Mutex<HashMap<String, (String, u64)>>>) {
+fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>>>, pins: Arc<Mutex<HashMap<String, (String, u64)>>>, solana_keys: Arc<Mutex<HashMap<String, String>>>) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut request_line = String::new();
     let _ = reader.read_line(&mut request_line);
@@ -212,9 +226,15 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
             ("400 Bad Request", "text/plain", "Email already exists".to_string())
         } else {
             let (priv_hex, addr) = generate_new_key();
-            users_map.insert(email, addr.clone());
+            let solana_keypair = Keypair::new();
+            let solana_pubkey = solana_keypair.pubkey().to_string();
+            let solana_priv = bs58::encode(solana_keypair.to_bytes()).into_string();
+            users_map.insert(email.clone(), format!("{}|{}", addr, solana_pubkey));
             save_users(&users_map);
-            ("200 OK", "text/plain", format!("{}|{}", priv_hex, addr))
+            let mut solana_map = solana_keys.lock().unwrap();
+            solana_map.insert(email, solana_priv);
+            save_solana_keys(&solana_map);
+            ("200 OK", "text/plain", format!("{}|{}|{}", priv_hex, addr, solana_pubkey))
         }
     } else if request_line.contains("POST /login") {
         let mut body = String::new();
@@ -226,8 +246,14 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
             match derive_address(pk) {
                 Some(addr) => {
                     let users_map = users.lock().unwrap();
-                    if users_map.get(email) == Some(&addr) {
-                        ("200 OK", "text/plain", addr)
+                    if let Some(stored) = users_map.get(email) {
+                        let stored_parts: Vec<&str> = stored.split('|').collect();
+                        if stored_parts.len() >= 1 && stored_parts[0] == addr {
+                            let solana_pubkey = if stored_parts.len() > 1 { stored_parts[1] } else { "" };
+                            ("200 OK", "text/plain", format!("{}|{}", addr, solana_pubkey))
+                        } else {
+                            ("401 Unauthorized", "text/plain", "Wrong private key for this email".to_string())
+                        }
                     } else {
                         ("401 Unauthorized", "text/plain", "Wrong private key for this email".to_string())
                     }
@@ -277,6 +303,7 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
 fn main() {
     let users = Arc::new(Mutex::new(load_users()));
     let pins = Arc::new(Mutex::new(HashMap::<String, (String, u64)>::new()));
+    let solana_keys = Arc::new(Mutex::new(load_solana_keys()));
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
     let addr = format!("0.0.0.0:{}", port);
     let listener = TcpListener::bind(&addr).unwrap();
@@ -285,7 +312,8 @@ fn main() {
         if let Ok(stream) = stream {
             let users = Arc::clone(&users);
             let pins = Arc::clone(&pins);
-            thread::spawn(move || handle_client(stream, users, pins));
+            let solana_keys = Arc::clone(&solana_keys);
+            thread::spawn(move || handle_client(stream, users, pins, solana_keys));
         }
     }
 }
