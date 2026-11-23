@@ -52,3 +52,18 @@ deposits.json
 cashouts.json
 fee_wallet.key
 fee_wallet.json
+trans_fee.json
+wallet.key
+str.env
+*.env
+
+# Runtime state
+processed_sigs.txt
+chain.json
+chain_meta.txt
+deposits.json
+cashouts.json
+users.json
+
+# Build
+target/
