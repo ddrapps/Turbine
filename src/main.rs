@@ -5,7 +5,6 @@ use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
-use chrono::Utc;
 use ed25519_dalek::{VerifyingKey, Signature, Verifier};
 use hex;
 
@@ -36,7 +35,7 @@ fn calculate_hash(block: &Block) -> String {
 }
 
 fn verify_signature(tx: &Transaction) -> bool {
-    if tx.from == "genesis" || tx.from == "str327" || tx.from == "premine" || tx.from == "deposit" || tx.from == "cashout" {
+    if tx.from == "genesis" || tx.from == "premine" || tx.from == "deposit" || tx.from == "cashout" {
         return true;
     }
     if tx.signature.is_empty() || tx.public_key.is_empty() { return false; }
@@ -59,7 +58,7 @@ fn calculate_balances(chain: &[Block]) -> HashMap<String, f64> {
         if tx.from == "cashout" {
             *balances.entry(tx.to.clone()).or_insert(0.0) -= tx.volume;
         } else {
-            if tx.from != "genesis" && tx.from != "str327" && tx.from != "premine" && tx.from != "deposit" {
+            if tx.from != "genesis" && tx.from != "premine" && tx.from != "deposit" {
                 *balances.entry(tx.from.clone()).or_insert(0.0) -= tx.volume;
             }
             *balances.entry(tx.to.clone()).or_insert(0.0) += tx.volume;
@@ -77,24 +76,6 @@ fn save_chain(chain: &[Block]) {
 fn load_chain() -> Vec<Block> {
     let content = fs::read_to_string("chain.json").unwrap_or_default();
     serde_json::from_str(&content).unwrap_or_default()
-}
-
-fn load_str_env() -> (f64, String, f64) {
-    let content = fs::read_to_string("str.env").unwrap_or_default();
-    let mut starting_balance = 100.0;
-    let mut str327_address = "kevin".to_string();
-    let mut daily_str327 = 0.01;
-    for line in content.lines() {
-        if let Some((key, value)) = line.split_once('=') {
-            match key.trim() {
-                "STARTING_BALANCE" => { if let Ok(v) = value.trim().parse::<f64>() { starting_balance = v; } }
-                "STR327_ADDRESS" => str327_address = value.trim().to_string(),
-                "DAILY_STR327" => { if let Ok(v) = value.trim().parse::<f64>() { daily_str327 = v; } }
-                _ => {}
-            }
-        }
-    }
-    (starting_balance, str327_address, daily_str327)
 }
 
 fn handle_http(stream: &mut std::net::TcpStream, chain: &[Block]) {
@@ -115,7 +96,6 @@ fn handle_http(stream: &mut std::net::TcpStream, chain: &[Block]) {
 }
 
 fn main() {
-    let (starting_balance, str327_address, daily_str327) = load_str_env();
     let args: Vec<String> = env::args().collect();
     let port = args.get(1).unwrap_or(&"7878".to_string()).clone();
     let addr = format!("127.0.0.1:{}", port);
@@ -125,32 +105,13 @@ fn main() {
         chain.push(Block {
             index: 1,
             transaction: Transaction {
-                from: "genesis".into(), to: str327_address.clone(), volume: starting_balance,
+                from: "genesis".into(), to: "CRUX".into(), volume: 0.0,
                 signature: String::new(), public_key: String::new(),
             },
             previous_hash: "0".into(),
         });
         save_chain(&chain);
-        println!("Created genesis with {} to {}", starting_balance, str327_address);
-    }
-
-    let today = Utc::now().format("%Y-%m-%d").to_string();
-    let str327_file = "str327.txt";
-    let last_str327 = fs::read_to_string(str327_file).unwrap_or_default();
-    if last_str327.trim() != today {
-        let tip = chain.last().unwrap();
-        let prev = calculate_hash(tip);
-        chain.push(Block {
-            index: tip.index + 1,
-            transaction: Transaction {
-                from: "str327".into(), to: str327_address.clone(), volume: daily_str327,
-                signature: String::new(), public_key: String::new(),
-            },
-            previous_hash: prev,
-        });
-        save_chain(&chain);
-        fs::write(str327_file, &today).unwrap();
-        println!("Daily str327 of {} given to {} for {}", daily_str327, str327_address, today);
+        println!("Created empty genesis for CRUX");
     }
 
     println!("Node ready. Blocks: {}", chain.len());
@@ -206,7 +167,7 @@ fn main() {
                             }
                             let balances = calculate_balances(&chain);
                             let sender_balance = balances.get(&tx.from).copied().unwrap_or(0.0);
-                            if tx.from != "genesis" && tx.from != "str327" && tx.from != "premine" && tx.from != "deposit" && tx.from != "cashout" && sender_balance < volume {
+                            if tx.from != "genesis" && tx.from != "premine" && tx.from != "deposit" && tx.from != "cashout" && sender_balance < volume {
                                 println!("Rejected - insufficient balance");
                                 let _ = stream.write_all(b"REJECTED\n");
                                 continue;
