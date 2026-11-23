@@ -10,6 +10,9 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
+use lettre::message::header::ContentType;
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{Message, SmtpTransport, Transport};
 
 fn load_users() -> HashMap<String, String> {
     match fs::read_to_string("/data/users.json") {
@@ -48,6 +51,27 @@ fn generate_new_key() -> (String, String) {
 fn generate_pin() -> String {
     let mut rng = ThreadRng::default();
     format!("{:06}", rng.random_range(0..1_000_000))
+}
+
+fn send_pin_email(to: &str, pin: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let smtp_user = std::env::var("SMTP_USER")?;
+    let smtp_pass = std::env::var("SMTP_PASS")?;
+    let smtp_from = std::env::var("SMTP_FROM").unwrap_or_else(|_| smtp_user.clone());
+
+    let email = Message::builder()
+        .from(smtp_from.parse()?)
+        .to(to.parse()?)
+        .subject("Your shesaysyes.ca login PIN")
+        .header(ContentType::TEXT_PLAIN)
+        .body(format!("Your login PIN is: {}\n\nIt expires in 10 minutes.", pin))?;
+
+    let creds = Credentials::new(smtp_user, smtp_pass);
+    let mailer = SmtpTransport::relay("smtp.gmail.com")?
+        .credentials(creds)
+        .build();
+
+    mailer.send(&email)?;
+    Ok(())
 }
 
 fn proxy_to_node(request: &str) -> String {
@@ -147,9 +171,13 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
         let pin = generate_pin();
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         pins.lock().unwrap().insert(email.clone(), (pin.clone(), now));
-        // TODO: send real email. For now print to console.
-        println!("PIN for {}: {}", email, pin);
-        ("200 OK", "text/plain", "PIN sent".to_string())
+        match send_pin_email(&email, &pin) {
+            Ok(_) => ("200 OK", "text/plain", "PIN sent".to_string()),
+            Err(e) => {
+                eprintln!("Failed to send PIN email to {}: {}", email, e);
+                ("500 Internal Server Error", "text/plain", "Failed to send PIN".to_string())
+            }
+        }
     } else if request_line.contains("POST /verify-pin") {
         let mut body = String::new();
         let _ = reader.read_line(&mut body);
