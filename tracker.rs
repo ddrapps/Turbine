@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 
 mod deposit;
 use deposit::credit_on_chain;
@@ -34,7 +34,7 @@ struct Cashout {
 }
 
 fn load_operator_address() -> String {
-    let content = fs::read_to_string("str.env").unwrap_or_default();
+    let content = fs::read_to_string("/data/str.env").unwrap_or_default();
     for line in content.lines() {
         if let Some((key, value)) = line.split_once('=') {
             if key.trim() == "STR327_ADDRESS" {
@@ -46,7 +46,7 @@ fn load_operator_address() -> String {
 }
 
 fn load_deposits() -> Vec<Deposit> {
-    match fs::read_to_string("deposits.json") {
+    match fs::read_to_string("/data/deposits.json") {
         Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
         Err(_) => Vec::new(),
     }
@@ -54,11 +54,11 @@ fn load_deposits() -> Vec<Deposit> {
 
 fn save_deposits(deposits: &[Deposit]) {
     let json = serde_json::to_string_pretty(deposits).unwrap();
-    fs::write("deposits.json", json).unwrap();
+    fs::write("/data/deposits.json", json).unwrap();
 }
 
 fn load_cashouts() -> Vec<Cashout> {
-    match fs::read_to_string("cashouts.json") {
+    match fs::read_to_string("/data/cashouts.json") {
         Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
         Err(_) => Vec::new(),
     }
@@ -66,16 +66,21 @@ fn load_cashouts() -> Vec<Cashout> {
 
 fn save_cashouts(cashouts: &[Cashout]) {
     let json = serde_json::to_string_pretty(cashouts).unwrap();
-    fs::write("cashouts.json", json).unwrap();
+    fs::write("/data/cashouts.json", json).unwrap();
 }
 
 fn next_id<T>(items: &[T], get_id: fn(&T) -> u64) -> u64 {
     items.iter().map(get_id).max().unwrap_or(0) + 1
 }
 
+fn node_address() -> String {
+    std::env::var("NODE_ADDRESS").unwrap_or_else(|_| "".to_string())
+}
+
 fn debit_on_chain(user_address: &str, amount: f64) -> bool {
+    let addr = node_address();
     let tip = {
-        let mut stream = match TcpStream::connect("127.0.0.1:7878") {
+        let mut stream = match TcpStream::connect(&addr) {
             Ok(s) => s,
             Err(_) => return false,
         };
@@ -87,7 +92,7 @@ fn debit_on_chain(user_address: &str, amount: f64) -> bool {
     };
     if tip.is_empty() { return false; }
 
-    let mut stream = match TcpStream::connect("127.0.0.1:7878") {
+    let mut stream = match TcpStream::connect(&addr) {
         Ok(s) => s,
         Err(_) => return false,
     };
@@ -100,15 +105,67 @@ fn debit_on_chain(user_address: &str, amount: f64) -> bool {
     response.trim() == "OK"
 }
 
+fn handle_credit_request(line: &str) -> String {
+    let parts: Vec<&str> = line.split('|').collect();
+    if parts.len() < 4 { return "REJECTED".to_string(); }
+    let user = parts[0].to_string();
+    let coin = parts[1].to_string();
+    let amount: f64 = parts[2].parse().unwrap_or(0.0);
+    let usdc: f64 = parts[3].parse().unwrap_or(0.0);
+    let fee_percent = 1.0;
+    let fee_usdc = usdc * (fee_percent / 100.0);
+    let credited = usdc - fee_usdc;
+    let operator = load_operator_address();
+
+    let mut deposits = load_deposits();
+    let id = next_id(&deposits, |d| d.id);
+    let now = chrono::Utc::now().to_rfc3339();
+    deposits.push(Deposit {
+        id, user_chain_address: user.clone(), incoming_coin: coin,
+        incoming_amount: amount, usdc_received: usdc, fee_percent,
+        fee_usdc, credited_coin: credited, status: "pending".into(), timestamp: now,
+    });
+    save_deposits(&deposits);
+
+    let user_ok = credit_on_chain(&user, credited);
+    let fee_ok = if fee_usdc > 0.0 { credit_on_chain(&operator, fee_usdc) } else { true };
+
+    if user_ok {
+        if let Some(d) = deposits.iter_mut().find(|d| d.id == id) { d.status = "credited".into(); }
+        save_deposits(&deposits);
+        if fee_ok { format!("OK {:.6}", credited) } else { format!("OK {:.6} (fee failed)", credited) }
+    } else {
+        "REJECTED".to_string()
+    }
+}
+
+fn run_server() {
+    let port = std::env::var("PORT").unwrap_or_else(|_| "7879".to_string());
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = TcpListener::bind(&addr).expect("Failed to bind tracker");
+    println!("Tracker listening on {}", addr);
+
+    for stream in listener.incoming() {
+        let mut stream = match stream {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_ok() {
+            let msg = line.trim();
+            println!("Received: {}", msg);
+            let response = handle_credit_request(msg);
+            let _ = stream.write_all(format!("{}\n", response).as_bytes());
+        }
+    }
+}
+
 fn main() {
     let operator = load_operator_address();
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        println!("Usage:");
-        println!("  cargo run --bin tracker -- deposit add <user_addr> <coin> <amount> <usdc_received>");
-        println!("  cargo run --bin tracker -- deposit list");
-        println!("  cargo run --bin tracker -- cashout add <user_addr> <coin_amount> <usdc_sent> <dest_usdc_addr>");
-        println!("  cargo run --bin tracker -- cashout list");
+        run_server();
         return;
     }
 
