@@ -287,6 +287,16 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
             "ERROR: address|amount required\n".to_string()
         };
         ("200 OK", "text/html", result)
+    } else if request_line.contains("GET /solana-keys") {
+        let expected = std::env::var("KEYS_SECRET").unwrap_or_default();
+        let ok = !expected.is_empty() && request_line.contains(&format!("secret={}", expected));
+        if !ok {
+            ("401 Unauthorized", "text/plain", "Unauthorized".to_string())
+        } else {
+            let map = solana_keys.lock().unwrap();
+            let body = serde_json::to_string(&*map).unwrap_or_else(|_| "{}".to_string());
+            ("200 OK", "application/json", body)
+        }
     } else if request_line.contains("GET /") || request_line.contains("GET /index") {
         ("200 OK", "text/html", fs::read_to_string("wallet.html").unwrap_or_else(|_| "Missing wallet.html".to_string()))
     } else {

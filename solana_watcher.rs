@@ -72,10 +72,18 @@ impl SolanaWatcher {
         map
     }
 
-    fn load_user_solana_keys() -> HashMap<String, String> {
-        match fs::read_to_string("/data/solana_keys.json") {
-            Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
-            Err(_) => HashMap::new(),
+    async fn load_user_solana_keys(&self) -> HashMap<String, String> {
+        let base = std::env::var("WEBWALLET_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+        let secret = std::env::var("KEYS_SECRET").unwrap_or_default();
+        let url = format!("{}/solana-keys?secret={}", base, secret);
+        match self.http.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<HashMap<String, String>>().await {
+                    Ok(map) => map,
+                    Err(_) => HashMap::new(),
+                }
+            }
+            _ => HashMap::new(),
         }
     }
 
@@ -117,7 +125,7 @@ impl SolanaWatcher {
     }
 
     async fn check_user_deposits(&self, rpc: &RpcClient) -> Result<(), Box<dyn std::error::Error>> {
-        let user_keys = Self::load_user_solana_keys();
+        let user_keys = self.load_user_solana_keys().await;
         if user_keys.is_empty() {
             return Ok(());
         }
