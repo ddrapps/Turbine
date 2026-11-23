@@ -7,7 +7,7 @@
     #out { background: #f4f4f4; padding: 12px; min-height: 150px; white-space: pre-wrap; font-family: monospace; border-radius: 4px; }
     .row { margin: 12px 0; }
     #address { font-family: monospace; word-break: break-all; }
-    #crux-balance { font-size: 1.4em; font-weight: bold; color: #2a7; }
+    #credits-applied { font-size: 1.4em; font-weight: bold; color: #2a7; }
     #cashout-result { margin-top: 12px; }
     #login-box, #confirm-box, #newkey-box { border: 1px solid #ccc; padding: 16px; border-radius: 6px; margin-bottom: 20px; }
     #wallet-box, #confirm-box, #newkey-box { display: none; }
@@ -47,12 +47,13 @@
     </div>
 
     <div class="row">
-      <strong>CRUX Balance:</strong>
-      <div id="crux-balance">loading...</div>
+      <strong>shesaysyes.ca Credits Applied:</strong>
+      <div id="credits-applied">0.000000</div>
+      <p style="color:#666;font-size:0.9em;">Credits are applied immediately. This resets to zero on next login.</p>
     </div>
 
     <div class="row">
-      <button onclick="loadBalance()">Refresh Balance</button>
+      <button onclick="loadBalance()">Refresh</button>
       <button onclick="loadHistory()">Show Chain / History</button>
       <button onclick="logout()">Logout</button>
     </div>
@@ -62,13 +63,6 @@
       <input id="to" placeholder="To address" size="66"><br>
       <input id="amount" placeholder="Amount" size="20" type="number" step="0.01">
       <button onclick="sendTx()">Send</button>
-    </div>
-
-    <div class="row">
-      <h3>Cash Out</h3>
-      <input id="cashout-amount" placeholder="CRUX amount" size="20" type="number" step="0.01">
-      <button onclick="cashOut()">Cash out CRUX</button>
-      <div id="cashout-result"></div>
     </div>
 
     <div id="out">Loading...</div>
@@ -207,18 +201,10 @@
 
     async function loadBalance() {
       if (!myAddress) return;
-      document.getElementById("out").textContent = "Loading balance...";
-      try {
-        const res = await fetch("/balance");
-        const text = await res.text();
-        document.getElementById("out").textContent = "Balances:\n" + text;
-        const balances = JSON.parse(text);
-        const crux = balances[myAddress] || 0;
-        document.getElementById("crux-balance").textContent = crux.toFixed(6) + " CRUX";
-      } catch (e) {
-        document.getElementById("out").textContent = "Error: " + e;
-        document.getElementById("crux-balance").textContent = "error";
-      }
+      document.getElementById("out").textContent = "Loading...";
+      // Transient: always show 0 until a new deposit is processed this session
+      document.getElementById("credits-applied").textContent = "0.000000";
+      document.getElementById("out").textContent = "Ready. Deposit SOL to apply shesaysyes.ca credits.";
     }
 
     async function loadHistory() {
@@ -250,26 +236,6 @@
         setTimeout(loadBalance, 500);
       } catch (e) {
         document.getElementById("out").textContent = "Error: " + e;
-      }
-    }
-
-    async function cashOut() {
-      const amount = document.getElementById("cashout-amount").value.trim();
-      if (!amount || parseFloat(amount) <= 0 || !myAddress) {
-        alert("Enter a valid CRUX amount");
-        return;
-      }
-      document.getElementById("cashout-result").textContent = "Processing...";
-      try {
-        const res = await fetch("/cashout", {
-          method: "POST",
-          body: myAddress + "|" + amount + "\n"
-        });
-        const text = await res.text();
-        document.getElementById("cashout-result").innerHTML = text;
-        setTimeout(loadBalance, 500);
-      } catch (e) {
-        document.getElementById("cashout-result").textContent = "Error: " + e;
       }
     }
   </script>

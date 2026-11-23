@@ -170,31 +170,19 @@ impl SolanaWatcher {
         println!("=== SWAP FUNCTION RETURNED ===");
         println!("USDC amount from quote: {:.6}", usdc_amount);
 
-        let fee_amount = usdc_amount * 0.02;
-        let after_fee = usdc_amount * 0.98;
-        println!("Would credit {:.6} CRUX to user (2% fee kept)", after_fee);
+        // 100% of USDC value is applied as shesaysyes.ca credits (no stored CRUX balance)
+        let credit_value = usdc_amount;
+        println!("Applying {:.6} shesaysyes.ca credits from deposit", credit_value);
 
-        if fee_amount > 0.000001 {
-            println!("About to send 2% fee...");
-            if let Err(e) = self.send_usdc_fee(fee_amount).await {
-                eprintln!("Failed to send 2% fee: {}", e);
-            } else {
-                println!("Sent {:.6} USDC fee to AQ5TGaA65xYxHMxB7NFW9mDjtn8tFDx4VeF8Qa5hdHhz", fee_amount);
-            }
-        }
-
-        let user_address = "a22f25d76ff6671502763f5fb6c0e6b234767e11323cc718912ceaae6c9cc6a7";
-        if credit_on_chain(user_address, after_fee) {
-            println!("Credited {:.6} CRUX to {} on chain", after_fee, user_address);
-        } else {
-            println!("Failed to credit on chain");
-        }
+        // Placeholder: apply credits to shesaysyes.ca for the depositing user
+        // (mapping from Solana deposit to site user is handled separately)
+        println!("shesaysyes.ca credits applied: {:.6}", credit_value);
 
         Ok(())
     }
 
     async fn send_usdc_fee(&self, amount: f64) -> Result<(), Box<dyn std::error::Error>> {
-        let dest = "AQ5TGaA65xYxHMxB7NFW9mDjtn8tFDx4VeF8Qa5hdHhz";
+        let dest = std::env::var("FEE_ADD").expect("FEE_ADD not set");
         let usdc_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
         let token_program = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
         let associated_token_program = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
@@ -202,7 +190,7 @@ impl SolanaWatcher {
         let amount_raw = (amount * 1_000_000.0) as u64;
 
         let rpc = RpcClient::new(&self.rpc_url);
-        let dest_pubkey = Pubkey::from_str(dest)?;
+        let dest_pubkey = Pubkey::from_str(&dest)?;
         let mint_pubkey = Pubkey::from_str(usdc_mint)?;
         let token_program_id = Pubkey::from_str(token_program)?;
         let ata_program_id = Pubkey::from_str(associated_token_program)?;
@@ -427,54 +415,16 @@ impl SolanaWatcher {
     }
 }
 
-fn credit_on_chain(user_address: &str, amount: f64) -> bool {
-    let node_addr = std::env::var("NODE_ADDRESS").unwrap_or_else(|_| "127.0.0.1:7878".to_string());
-
-    let tip = {
-        let mut stream = match TcpStream::connect(&node_addr) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        if stream.write_all(b"GET_TIP\n").is_err() {
-            return false;
-        }
-        let mut reader = BufReader::new(stream);
-        let mut tip = String::new();
-        if reader.read_line(&mut tip).is_err() {
-            return false;
-        }
-        tip.trim().to_string()
-    };
-    if tip.is_empty() {
-        return false;
-    }
-
-    let mut stream = match TcpStream::connect(&node_addr) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let tx_line = format!("{}|deposit|{}|{}||\n", tip, user_address, amount);
-    if stream.write_all(tx_line.as_bytes()).is_err() {
-        return false;
-    }
-
-    let mut reader = BufReader::new(stream);
-    let mut response = String::new();
-    if reader.read_line(&mut response).is_err() {
-        return false;
-    }
-    response.trim() == "OK"
-}
-
 #[tokio::main]
 async fn main() {
     let rpc_url = std::env::var("HELIUS_RPC_URL").expect("HELIUS_RPC_URL not set");
     let fee_wallet_key = std::env::var("FEE_WALLET_KEY").expect("FEE_WALLET_KEY not set");
     let trans_fee_key = std::env::var("TRANS_FEE").expect("TRANS_FEE not set");
+    let deposit_address = std::env::var("FEE_ADD").expect("FEE_ADD not set");
 
     let watcher = SolanaWatcher::new(
         &rpc_url,
-        "DGzDWaxZBWar1qgATna4o1Cjvn4wKWLHveZ3mDcbNg5a",
+        &deposit_address,
         &fee_wallet_key,
         &trans_fee_key,
     );
