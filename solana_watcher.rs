@@ -21,7 +21,6 @@ pub struct SolanaWatcher {
     rpc_url: String,
     deposit_address: String,
     fee_wallet: Keypair,
-    trans_fee_wallet: Keypair,
     last_seen: Mutex<Option<String>>,
     processed: Mutex<HashSet<String>>,
     http: Client,
@@ -29,12 +28,9 @@ pub struct SolanaWatcher {
 }
 
 impl SolanaWatcher {
-    pub fn new(rpc_url: &str, deposit_address: &str, fee_wallet_key: &str, trans_fee_key: &str) -> Self {
+    pub fn new(rpc_url: &str, deposit_address: &str, fee_wallet_key: &str) -> Self {
         let fee_vec: Vec<u8> = serde_json::from_str(fee_wallet_key).expect("invalid FEE_WALLET_KEY json");
         let fee_wallet = Keypair::from_bytes(&fee_vec).expect("invalid fee wallet");
-
-        let trans_fee_vec: Vec<u8> = serde_json::from_str(trans_fee_key).expect("invalid TRANS_FEE json");
-        let trans_fee_wallet = Keypair::from_bytes(&trans_fee_vec).expect("invalid trans fee wallet");
 
         let processed = if let Ok(data) = fs::read_to_string("/data/processed_sigs.txt") {
             data.lines().filter(|l| !l.is_empty()).map(|s| s.to_string()).collect()
@@ -48,7 +44,6 @@ impl SolanaWatcher {
             rpc_url: rpc_url.to_string(),
             deposit_address: deposit_address.to_string(),
             fee_wallet,
-            trans_fee_wallet,
             last_seen: Mutex::new(None),
             processed: Mutex::new(processed),
             http: Client::new(),
@@ -76,8 +71,7 @@ impl SolanaWatcher {
 
     pub async fn run(&self) {
         println!("Solana watcher started. Watching: {}", self.deposit_address);
-        println!("Fee address (swap):     {}", self.fee_wallet.pubkey());
-        println!("Trans fee address (SOL): {}", self.trans_fee_wallet.pubkey());
+        println!("Fee address (swap + fees): {}", self.fee_wallet.pubkey());
         let rpc = RpcClient::new(&self.rpc_url);
 
         if let Ok(pubkey) = Pubkey::from_str(&self.deposit_address) {
@@ -181,60 +175,6 @@ impl SolanaWatcher {
         Ok(())
     }
 
-    async fn send_usdc_fee(&self, amount: f64) -> Result<(), Box<dyn std::error::Error>> {
-        let dest = std::env::var("FEE_ADD").expect("FEE_ADD not set");
-        let usdc_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-        let token_program = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-        let associated_token_program = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
-
-        let amount_raw = (amount * 1_000_000.0) as u64;
-
-        let rpc = RpcClient::new(&self.rpc_url);
-        let dest_pubkey = Pubkey::from_str(&dest)?;
-        let mint_pubkey = Pubkey::from_str(usdc_mint)?;
-        let token_program_id = Pubkey::from_str(token_program)?;
-        let ata_program_id = Pubkey::from_str(associated_token_program)?;
-
-        let source_ata = Pubkey::find_program_address(
-            &[
-                self.fee_wallet.pubkey().as_ref(),
-                token_program_id.as_ref(),
-                mint_pubkey.as_ref(),
-            ],
-            &ata_program_id,
-        ).0;
-
-        let dest_ata = Pubkey::find_program_address(
-            &[
-                dest_pubkey.as_ref(),
-                token_program_id.as_ref(),
-                mint_pubkey.as_ref(),
-            ],
-            &ata_program_id,
-        ).0;
-
-        let mut data = vec![3u8];
-        data.extend_from_slice(&amount_raw.to_le_bytes());
-
-        let transfer_ix = Instruction {
-            program_id: token_program_id,
-            accounts: vec![
-                AccountMeta::new(source_ata, false),
-                AccountMeta::new(dest_ata, false),
-                AccountMeta::new_readonly(self.fee_wallet.pubkey(), true),
-            ],
-            data,
-        };
-
-        let recent = rpc.get_latest_blockhash()?;
-        let mut tx = Transaction::new_with_payer(&[transfer_ix], Some(&self.trans_fee_wallet.pubkey()));
-        tx.sign(&[&self.fee_wallet, &self.trans_fee_wallet], recent);
-
-        let sig = rpc.send_transaction(&tx)?;
-        println!("Fee transfer sent: {}", sig);
-        Ok(())
-    }
-
     async fn jupiter_swap(&self, symbol: &str, amount: f64, input_mint: &str) -> Result<f64, Box<dyn std::error::Error>> {
         let decimals = if symbol == "SOL" { 9 } else { 6 };
         let raw_amount = (amount * 10f64.powi(decimals)) as u64;
@@ -247,10 +187,11 @@ impl SolanaWatcher {
         let out_amount = quote["outAmount"].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0) / 1_000_000.0;
         println!("Jupiter quote: {} {} → {:.6} USDC", amount, symbol, out_amount);
 
+        let fee_pubkey = self.fee_wallet.pubkey().to_string();
         let swap_body = json!({
             "quoteResponse": quote,
-            "userPublicKey": self.fee_wallet.pubkey().to_string(),
-            "payer": self.trans_fee_wallet.pubkey().to_string(),
+            "userPublicKey": fee_pubkey,
+            "payer": fee_pubkey,
             "wrapAndUnwrapSol": true,
         });
 
@@ -268,7 +209,6 @@ impl SolanaWatcher {
 
             let message_data = tx.message.serialize();
             let fee_sig = self.fee_wallet.sign_message(&message_data);
-            let trans_fee_sig = self.trans_fee_wallet.sign_message(&message_data);
 
             let account_keys = tx.message.static_account_keys();
             let num_signers = tx.message.header().num_required_signatures as usize;
@@ -277,8 +217,6 @@ impl SolanaWatcher {
                 let key = account_keys[i];
                 if key == self.fee_wallet.pubkey() {
                     tx.signatures[i] = fee_sig;
-                } else if key == self.trans_fee_wallet.pubkey() {
-                    tx.signatures[i] = trans_fee_sig;
                 }
             }
 
@@ -419,14 +357,12 @@ impl SolanaWatcher {
 async fn main() {
     let rpc_url = std::env::var("HELIUS_RPC_URL").expect("HELIUS_RPC_URL not set");
     let fee_wallet_key = std::env::var("FEE_WALLET_KEY").expect("FEE_WALLET_KEY not set");
-    let trans_fee_key = std::env::var("TRANS_FEE").expect("TRANS_FEE not set");
     let deposit_address = std::env::var("FEE_ADD").expect("FEE_ADD not set");
 
     let watcher = SolanaWatcher::new(
         &rpc_url,
         &deposit_address,
         &fee_wallet_key,
-        &trans_fee_key,
     );
     watcher.run().await;
 }
