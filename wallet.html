@@ -88,6 +88,17 @@
     let mySolanaAddress = "";
     let pendingEmail = "";
 
+    // Prefill email from ?email= query param
+    (function() {
+      const params = new URLSearchParams(location.search);
+      const pre = params.get("email");
+      if (pre) {
+        const el = document.getElementById("email");
+        if (el) el.value = pre;
+      }
+    })();
+
+
     async function checkEmail() {
       const email = document.getElementById("email").value.trim();
       if (!email || !email.includes("@")) {
