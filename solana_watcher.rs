@@ -144,8 +144,8 @@ impl SolanaWatcher {
                     }
                 }
 
-                if let Ok(Some(("SOL", amount, _))) = self.detect_deposit_for_address(rpc, signature, &user_pubkey.to_string()).await {
-                    if amount > 0.000001 {
+                if let Ok(Some((symbol, amount, _))) = self.detect_deposit_for_address(rpc, signature, &user_pubkey.to_string()).await {
+                    if symbol == "SOL" && amount > 0.000001 {
                         println!("User deposit detected for {}: {} SOL", email, amount);
                         if let Err(e) = self.forward_to_fee_add(rpc, &keypair, amount).await {
                             eprintln!("Forward failed for {}: {}", email, e);
