@@ -1,55 +1,223 @@
 <html>
 <head>
-  <title>Wallet</title>
+  <title>Horcrux Exchange</title>
   <style>
     body { font-family: sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; }
     button, input { padding: 8px 12px; margin: 4px; }
     #out { background: #f4f4f4; padding: 12px; min-height: 150px; white-space: pre-wrap; font-family: monospace; border-radius: 4px; }
     .row { margin: 12px 0; }
     #address { font-family: monospace; word-break: break-all; }
+    #crux-balance { font-size: 1.4em; font-weight: bold; color: #2a7; }
+    #cashout-result { margin-top: 12px; }
+    #login-box, #confirm-box, #newkey-box { border: 1px solid #ccc; padding: 16px; border-radius: 6px; margin-bottom: 20px; }
+    #wallet-box, #confirm-box, #newkey-box { display: none; }
   </style>
 </head>
 <body>
-  <h2>Web Wallet</h2>
+  <h2>Horcrux Exchange</h2>
 
-  <div class="row">
-    <strong>Your address:</strong><br>
-    <span id="address">loading...</span>
+  <div id="login-box">
+    <h3>Enter your email</h3>
+    <input id="email" placeholder="Email" size="40"><br>
+    <button onclick="checkEmail()">Continue</button>
+    <div id="login-msg"></div>
   </div>
 
-  <div class="row">
-    <button onclick="loadBalance()">Refresh Balance</button>
-    <button onclick="loadHistory()">Show Chain / History</button>
+  <div id="confirm-box">
+    <h3>Confirm your email</h3>
+    <p>A 6-digit PIN was sent to <strong id="confirm-email"></strong></p>
+    <input id="pin" placeholder="Enter PIN" size="10" maxlength="6"><br>
+    <button onclick="confirmEmail()">Confirm</button>
+    <button onclick="changeEmail()">Change email</button>
+    <div id="confirm-msg"></div>
   </div>
 
-  <div class="row">
-    <h3>Send</h3>
-    <input id="to" placeholder="To address" size="66"><br>
-    <input id="amount" placeholder="Amount" size="20" type="number" step="0.01">
-    <button onclick="sendTx()">Send</button>
+  <div id="newkey-box">
+    <h3>Your new wallet</h3>
+    <p>Save this private key. You will need it every time you log in. It will not be shown again.</p>
+    <p><strong>Private key:</strong><br><span id="new-private-key" style="font-family:monospace;word-break:break-all;"></span></p>
+    <p><strong>Address:</strong><br><span id="new-address" style="font-family:monospace;word-break:break-all;"></span></p>
+    <button onclick="finishNewWallet()">I Saved It.... Continue</button>
   </div>
 
-  <div id="out">Loading...</div>
+  <div id="wallet-box">
+    <div class="row">
+      <strong>Your address:</strong><br>
+      <span id="address"></span>
+    </div>
+
+    <div class="row">
+      <strong>CRUX Balance:</strong>
+      <div id="crux-balance">loading...</div>
+    </div>
+
+    <div class="row">
+      <button onclick="loadBalance()">Refresh Balance</button>
+      <button onclick="loadHistory()">Show Chain / History</button>
+      <button onclick="logout()">Logout</button>
+    </div>
+
+    <div class="row">
+      <h3>Send</h3>
+      <input id="to" placeholder="To address" size="66"><br>
+      <input id="amount" placeholder="Amount" size="20" type="number" step="0.01">
+      <button onclick="sendTx()">Send</button>
+    </div>
+
+    <div class="row">
+      <h3>Cash Out</h3>
+      <input id="cashout-amount" placeholder="CRUX amount" size="20" type="number" step="0.01">
+      <button onclick="cashOut()">Cash out CRUX</button>
+      <div id="cashout-result"></div>
+    </div>
+
+    <div id="out">Loading...</div>
+  </div>
+
+  <div id="returning-box" style="display:none; border:1px solid #ccc; padding:16px; border-radius:6px; margin-bottom:20px;">
+    <h3>Welcome back</h3>
+    <p>Email: <strong id="returning-email"></strong></p>
+    <input id="returning-pk" placeholder="Private key (hex)" size="66" type="password"><br>
+    <button onclick="loginReturning()">Login</button>
+    <div id="returning-msg"></div>
+  </div>
 
   <script>
-    async function loadAddress() {
+    let myAddress = "";
+    let myPrivateKey = "";
+    let pendingEmail = "";
+
+    async function checkEmail() {
+      const email = document.getElementById("email").value.trim();
+      if (!email || !email.includes("@")) {
+        document.getElementById("login-msg").textContent = "Enter a valid email";
+        return;
+      }
+      pendingEmail = email;
       try {
-        const res = await fetch("/address");
+        const res = await fetch("/check-email", {
+          method: "POST",
+          body: email + "\n"
+        });
         const text = await res.text();
-        document.getElementById("address").textContent = text.trim();
+        if (text.trim() === "exists") {
+          document.getElementById("returning-email").textContent = email;
+          document.getElementById("login-box").style.display = "none";
+          document.getElementById("returning-box").style.display = "block";
+        } else {
+          document.getElementById("confirm-email").textContent = email;
+          document.getElementById("login-box").style.display = "none";
+          document.getElementById("confirm-box").style.display = "block";
+          // Trigger PIN send
+          await fetch("/send-pin", { method: "POST", body: email + "\n" });
+        }
       } catch (e) {
-        document.getElementById("address").textContent = "Error loading address";
+        document.getElementById("login-msg").textContent = "Error: " + e;
       }
     }
 
+    function changeEmail() {
+      document.getElementById("confirm-box").style.display = "none";
+      document.getElementById("login-box").style.display = "block";
+    }
+
+    async function confirmEmail() {
+      const pin = document.getElementById("pin").value.trim();
+      if (pin.length !== 6) {
+        document.getElementById("confirm-msg").textContent = "Enter the 6-digit PIN";
+        return;
+      }
+      try {
+        const res = await fetch("/verify-pin", {
+          method: "POST",
+          body: pendingEmail + "|" + pin + "\n"
+        });
+        const text = await res.text();
+        if (!res.ok) {
+          document.getElementById("confirm-msg").textContent = text;
+          return;
+        }
+        // PIN ok — create wallet
+        const create = await fetch("/create-wallet", {
+          method: "POST",
+          body: pendingEmail + "\n"
+        });
+        const createText = await create.text();
+        if (create.ok) {
+          const parts = createText.trim().split("|");
+          document.getElementById("new-private-key").textContent = parts[0];
+          document.getElementById("new-address").textContent = parts[1];
+          myPrivateKey = parts[0];
+          myAddress = parts[1];
+          document.getElementById("confirm-box").style.display = "none";
+          document.getElementById("newkey-box").style.display = "block";
+        } else {
+          document.getElementById("confirm-msg").textContent = createText;
+        }
+      } catch (e) {
+        document.getElementById("confirm-msg").textContent = "Error: " + e;
+      }
+    }
+
+    function finishNewWallet() {
+      document.getElementById("newkey-box").style.display = "none";
+      document.getElementById("wallet-box").style.display = "block";
+      document.getElementById("address").textContent = myAddress;
+      loadBalance();
+    }
+
+    async function loginReturning() {
+      const pk = document.getElementById("returning-pk").value.trim();
+      if (!pk) {
+        document.getElementById("returning-msg").textContent = "Enter your private key";
+        return;
+      }
+      try {
+        const res = await fetch("/login", {
+          method: "POST",
+          body: pendingEmail + "|" + pk + "\n"
+        });
+        const text = await res.text();
+        if (res.ok) {
+          myAddress = text.trim();
+          myPrivateKey = pk;
+          document.getElementById("returning-box").style.display = "none";
+          document.getElementById("wallet-box").style.display = "block";
+          document.getElementById("address").textContent = myAddress;
+          loadBalance();
+        } else {
+          document.getElementById("returning-msg").textContent = text;
+        }
+      } catch (e) {
+        document.getElementById("returning-msg").textContent = "Error: " + e;
+      }
+    }
+
+    function logout() {
+      myAddress = "";
+      myPrivateKey = "";
+      pendingEmail = "";
+      document.getElementById("login-box").style.display = "block";
+      document.getElementById("wallet-box").style.display = "none";
+      document.getElementById("confirm-box").style.display = "none";
+      document.getElementById("newkey-box").style.display = "none";
+      document.getElementById("returning-box").style.display = "none";
+      document.getElementById("login-msg").textContent = "";
+    }
+
     async function loadBalance() {
+      if (!myAddress) return;
       document.getElementById("out").textContent = "Loading balance...";
       try {
         const res = await fetch("/balance");
         const text = await res.text();
         document.getElementById("out").textContent = "Balances:\n" + text;
+        const balances = JSON.parse(text);
+        const crux = balances[myAddress] || 0;
+        document.getElementById("crux-balance").textContent = crux.toFixed(6) + " CRUX";
       } catch (e) {
         document.getElementById("out").textContent = "Error: " + e;
+        document.getElementById("crux-balance").textContent = "error";
       }
     }
 
@@ -67,7 +235,7 @@
     async function sendTx() {
       const to = document.getElementById("to").value.trim();
       const amount = document.getElementById("amount").value.trim();
-      if (!to || !amount) {
+      if (!to || !amount || !myAddress || !myPrivateKey) {
         alert("Enter a to address and amount");
         return;
       }
@@ -75,20 +243,35 @@
       try {
         const res = await fetch("/send", {
           method: "POST",
-          body: to + "|" + amount + "\n"
+          body: myAddress + "|" + to + "|" + amount + "|" + myPrivateKey + "\n"
         });
         const text = await res.text();
         document.getElementById("out").textContent = "Send result:\n" + text;
-        // Refresh balance after send
         setTimeout(loadBalance, 500);
       } catch (e) {
         document.getElementById("out").textContent = "Error: " + e;
       }
     }
 
-    // Load address and balance on page load
-    loadAddress();
-    loadBalance();
+    async function cashOut() {
+      const amount = document.getElementById("cashout-amount").value.trim();
+      if (!amount || parseFloat(amount) <= 0 || !myAddress) {
+        alert("Enter a valid CRUX amount");
+        return;
+      }
+      document.getElementById("cashout-result").textContent = "Processing...";
+      try {
+        const res = await fetch("/cashout", {
+          method: "POST",
+          body: myAddress + "|" + amount + "\n"
+        });
+        const text = await res.text();
+        document.getElementById("cashout-result").innerHTML = text;
+        setTimeout(loadBalance, 500);
+      } catch (e) {
+        document.getElementById("cashout-result").textContent = "Error: " + e;
+      }
+    }
   </script>
 </body>
 </html>

@@ -1,26 +1,53 @@
 use ed25519_dalek::{SigningKey, Signer};
 use hex;
+use rand::rngs::ThreadRng;
+use rand::{Rng, RngExt};
+use serde_json;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-fn load_signing_key() -> Option<SigningKey> {
-    let bytes = fs::read("wallet.key").ok()?;
+fn load_users() -> HashMap<String, String> {
+    match fs::read_to_string("users.json") {
+        Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn save_users(users: &HashMap<String, String>) {
+    if let Ok(json) = serde_json::to_string_pretty(users) {
+        let _ = fs::write("users.json", json);
+    }
+}
+
+fn derive_address(private_key_hex: &str) -> Option<String> {
+    let bytes = hex::decode(private_key_hex.trim()).ok()?;
     if bytes.len() != 32 {
         return None;
     }
     let mut key_bytes = [0u8; 32];
     key_bytes.copy_from_slice(&bytes);
-    Some(SigningKey::from_bytes(&key_bytes))
+    let key = SigningKey::from_bytes(&key_bytes);
+    Some(hex::encode(key.verifying_key().as_bytes()))
 }
 
-fn get_address() -> String {
-    if let Some(key) = load_signing_key() {
-        hex::encode(key.verifying_key().as_bytes())
-    } else {
-        "no-wallet-key".to_string()
-    }
+fn generate_new_key() -> (String, String) {
+    let mut rng = ThreadRng::default();
+    let mut secret = [0u8; 32];
+    rng.fill_bytes(&mut secret);
+    let key = SigningKey::from_bytes(&secret);
+    let priv_hex = hex::encode(secret);
+    let addr = hex::encode(key.verifying_key().as_bytes());
+    (priv_hex, addr)
+}
+
+fn generate_pin() -> String {
+    let mut rng = ThreadRng::default();
+    format!("{:06}", rng.random_range(0..1_000_000))
 }
 
 fn proxy_to_node(request: &str) -> String {
@@ -36,51 +63,172 @@ fn proxy_to_node(request: &str) -> String {
     }
 }
 
-fn handle_send(to: &str, amount: &str) -> String {
-    let signing_key = match load_signing_key() {
+fn handle_send(from: &str, to: &str, amount: &str, private_key_hex: &str) -> String {
+    let signing_key = match derive_address(private_key_hex).and_then(|_| {
+        let bytes = hex::decode(private_key_hex.trim()).ok()?;
+        if bytes.len() != 32 { return None; }
+        let mut key_bytes = [0u8; 32];
+        key_bytes.copy_from_slice(&bytes);
+        Some(SigningKey::from_bytes(&key_bytes))
+    }) {
         Some(k) => k,
-        None => return "ERROR: wallet.key not found or invalid\n".to_string(),
+        None => return "ERROR: invalid private key\n".to_string(),
     };
-    let from = hex::encode(signing_key.verifying_key().as_bytes());
 
-    // Get tip
     let tip = proxy_to_node("GET_TIP\n").trim().to_string();
     if tip.starts_with("ERROR") || tip.is_empty() {
         return "ERROR: Could not get tip from node\n".to_string();
     }
 
-    // Sign
     let msg = format!("{}{}{}", from, to, amount);
     let signature = signing_key.sign(msg.as_bytes());
     let sig_hex = hex::encode(signature.to_bytes());
 
-    // Build and send tx
     let tx_line = format!("{}|{}|{}|{}|{}|{}\n", tip, from, to, amount, sig_hex, from);
     proxy_to_node(&tx_line)
 }
 
-fn handle_client(mut stream: TcpStream) {
+fn handle_cashout(address: &str, amount_str: &str) -> String {
+    let amount: f64 = match amount_str.parse() {
+        Ok(a) if a > 0.0 => a,
+        _ => return "ERROR: invalid amount\n".to_string(),
+    };
+
+    let tip = proxy_to_node("GET_TIP\n").trim().to_string();
+    if tip.starts_with("ERROR") || tip.is_empty() {
+        return "ERROR: Could not get tip from node\n".to_string();
+    }
+
+    let tx_line = format!("{}|cashout|{}|{}||\n", tip, address, amount);
+    let result = proxy_to_node(&tx_line);
+
+    if result.trim() == "OK" {
+        format!(
+            "Cash out successful. {} CRUX burned.<br><br>\
+             <button disabled>Convert to cash (partner TBD)</button>\
+             <p style=\"color:#666;font-size:0.9em;\">Fiat partner not yet configured.</p>",
+            amount
+        )
+    } else {
+        format!("Cash out failed: {}", result.trim())
+    }
+}
+
+fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>>>, pins: Arc<Mutex<HashMap<String, (String, u64)>>>) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut request_line = String::new();
     let _ = reader.read_line(&mut request_line);
 
-    let (status, content_type, body) = if request_line.contains("GET /balance") {
+    // Skip headers until blank line
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let _ = reader.read_line(&mut line);
+        if line.trim().is_empty() {
+            break;
+        }
+    }
+
+    let (status, content_type, body) = if request_line.contains("POST /check-email") {
+        let mut body = String::new();
+        let _ = reader.read_line(&mut body);
+        let email = body.trim();
+        let users_map = users.lock().unwrap();
+        let result = if users_map.contains_key(email) { "exists" } else { "new" };
+        ("200 OK", "text/plain", result.to_string())
+    } else if request_line.contains("POST /send-pin") {
+        let mut body = String::new();
+        let _ = reader.read_line(&mut body);
+        let email = body.trim().to_string();
+        let pin = generate_pin();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        pins.lock().unwrap().insert(email.clone(), (pin.clone(), now));
+        // TODO: send real email. For now print to console.
+        println!("PIN for {}: {}", email, pin);
+        ("200 OK", "text/plain", "PIN sent".to_string())
+    } else if request_line.contains("POST /verify-pin") {
+        let mut body = String::new();
+        let _ = reader.read_line(&mut body);
+        let parts: Vec<&str> = body.trim().split('|').collect();
+        if parts.len() == 2 {
+            let email = parts[0];
+            let entered = parts[1];
+            let mut pins_map = pins.lock().unwrap();
+            if let Some((stored_pin, sent_at)) = pins_map.get(email) {
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                if now - sent_at > 600 {
+                    pins_map.remove(email);
+                    ("401 Unauthorized", "text/plain", "PIN expired".to_string())
+                } else if stored_pin == entered {
+                    pins_map.remove(email);
+                    ("200 OK", "text/plain", "OK".to_string())
+                } else {
+                    ("401 Unauthorized", "text/plain", "Wrong PIN".to_string())
+                }
+            } else {
+                ("401 Unauthorized", "text/plain", "No PIN for this email".to_string())
+            }
+        } else {
+            ("400 Bad Request", "text/plain", "email|pin required".to_string())
+        }
+    } else if request_line.contains("POST /create-wallet") {
+        let mut body = String::new();
+        let _ = reader.read_line(&mut body);
+        let email = body.trim().to_string();
+        let mut users_map = users.lock().unwrap();
+        if users_map.contains_key(&email) {
+            ("400 Bad Request", "text/plain", "Email already exists".to_string())
+        } else {
+            let (priv_hex, addr) = generate_new_key();
+            users_map.insert(email, addr.clone());
+            save_users(&users_map);
+            ("200 OK", "text/plain", format!("{}|{}", priv_hex, addr))
+        }
+    } else if request_line.contains("POST /login") {
+        let mut body = String::new();
+        let _ = reader.read_line(&mut body);
+        let parts: Vec<&str> = body.trim().split('|').collect();
+        if parts.len() == 2 {
+            let email = parts[0];
+            let pk = parts[1];
+            match derive_address(pk) {
+                Some(addr) => {
+                    let users_map = users.lock().unwrap();
+                    if users_map.get(email) == Some(&addr) {
+                        ("200 OK", "text/plain", addr)
+                    } else {
+                        ("401 Unauthorized", "text/plain", "Wrong private key for this email".to_string())
+                    }
+                }
+                None => ("401 Unauthorized", "text/plain", "Invalid private key".to_string()),
+            }
+        } else {
+            ("400 Bad Request", "text/plain", "email|privatekey required".to_string())
+        }
+    } else if request_line.contains("GET /balance") {
         ("200 OK", "application/json", proxy_to_node("GET_BALANCES\n"))
     } else if request_line.contains("GET /chain") {
         ("200 OK", "application/json", proxy_to_node("GET_CHAIN\n"))
-    } else if request_line.contains("GET /address") {
-        ("200 OK", "text/plain", get_address())
     } else if request_line.contains("POST /send") {
-        // Simple body parse: expect "to|amount"
+        let mut body = String::new();
+        let _ = reader.read_line(&mut body);
+        let parts: Vec<&str> = body.trim().split('|').collect();
+        let result = if parts.len() == 4 {
+            handle_send(parts[0], parts[1], parts[2], parts[3])
+        } else {
+            "ERROR: address|to|amount|privatekey required\n".to_string()
+        };
+        ("200 OK", "text/plain", result)
+    } else if request_line.contains("POST /cashout") {
         let mut body = String::new();
         let _ = reader.read_line(&mut body);
         let parts: Vec<&str> = body.trim().split('|').collect();
         let result = if parts.len() == 2 {
-            handle_send(parts[0], parts[1])
+            handle_cashout(parts[0], parts[1])
         } else {
-            "ERROR: bad request\n".to_string()
+            "ERROR: address|amount required\n".to_string()
         };
-        ("200 OK", "text/plain", result)
+        ("200 OK", "text/html", result)
     } else if request_line.contains("GET /") || request_line.contains("GET /index") {
         ("200 OK", "text/html", fs::read_to_string("wallet.html").unwrap_or_else(|_| "Missing wallet.html".to_string()))
     } else {
@@ -95,12 +243,15 @@ fn handle_client(mut stream: TcpStream) {
 }
 
 fn main() {
+    let users = Arc::new(Mutex::new(load_users()));
+    let pins = Arc::new(Mutex::new(HashMap::<String, (String, u64)>::new()));
     let listener = TcpListener::bind("127.0.0.1:3000").unwrap();
     println!("Web wallet running at http://127.0.0.1:3000");
-    println!("Address: {}", get_address());
     for stream in listener.incoming() {
         if let Ok(stream) = stream {
-            thread::spawn(|| handle_client(stream));
+            let users = Arc::clone(&users);
+            let pins = Arc::clone(&pins);
+            thread::spawn(move || handle_client(stream, users, pins));
         }
     }
 }
