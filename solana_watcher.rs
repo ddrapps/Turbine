@@ -7,6 +7,7 @@ use solana_client::rpc_config::RpcTransactionConfig;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::transaction::{Transaction, VersionedTransaction};
 use solana_sdk::instruction::{Instruction, AccountMeta};
+use solana_sdk::system_instruction;
 use solana_transaction_status::UiTransactionEncoding;
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -25,6 +26,7 @@ pub struct SolanaWatcher {
     processed: Mutex<HashSet<String>>,
     http: Client,
     mint_to_symbol: HashMap<String, String>,
+    pending_credits: Mutex<HashMap<String, String>>,
 }
 
 impl SolanaWatcher {
@@ -48,6 +50,7 @@ impl SolanaWatcher {
             processed: Mutex::new(processed),
             http: Client::new(),
             mint_to_symbol,
+            pending_credits: Mutex::new(HashMap::new()),
         }
     }
 
@@ -67,6 +70,13 @@ impl SolanaWatcher {
         }
         println!("Loaded {} mints from mint.json", map.len());
         map
+    }
+
+    fn load_user_solana_keys() -> HashMap<String, String> {
+        match fs::read_to_string("/data/solana_keys.json") {
+            Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        }
     }
 
     pub async fn run(&self) {
@@ -96,11 +106,129 @@ impl SolanaWatcher {
         }
 
         loop {
+            if let Err(e) = self.check_user_deposits(&rpc).await {
+                eprintln!("User deposit check error: {}", e);
+            }
             if let Err(e) = self.check_for_deposits(&rpc).await {
                 eprintln!("Watcher error: {}", e);
             }
             sleep(Duration::from_secs(20)).await;
         }
+    }
+
+    async fn check_user_deposits(&self, rpc: &RpcClient) -> Result<(), Box<dyn std::error::Error>> {
+        let user_keys = Self::load_user_solana_keys();
+        if user_keys.is_empty() {
+            return Ok(());
+        }
+
+        for (email, priv_base58) in user_keys {
+            let keypair = match bs58::decode(&priv_base58).into_vec() {
+                Ok(bytes) if bytes.len() == 64 => Keypair::from_bytes(&bytes).ok(),
+                _ => None,
+            };
+            let Some(keypair) = keypair else { continue };
+            let user_pubkey = keypair.pubkey();
+
+            let signatures = match rpc.get_signatures_for_address(&user_pubkey) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            for sig in signatures.iter().take(3) {
+                let signature = &sig.signature;
+                {
+                    let processed = self.processed.lock().unwrap();
+                    if processed.contains(signature) {
+                        continue;
+                    }
+                }
+
+                if let Ok(Some(("SOL", amount, _))) = self.detect_deposit_for_address(rpc, signature, &user_pubkey.to_string()).await {
+                    if amount > 0.000001 {
+                        println!("User deposit detected for {}: {} SOL", email, amount);
+                        if let Err(e) = self.forward_to_fee_add(rpc, &keypair, amount).await {
+                            eprintln!("Forward failed for {}: {}", email, e);
+                        } else {
+                            let mut processed = self.processed.lock().unwrap();
+                            processed.insert(signature.clone());
+                            let _ = fs::write("/data/processed_sigs.txt", processed.iter().cloned().collect::<Vec<_>>().join("\n"));
+                            // Record pending credit for this user so the FEE_ADD handler can credit the right account
+                            self.pending_credits.lock().unwrap().insert(signature.clone(), email.clone());
+                            println!("Forwarded {} SOL from {} to FEE_ADD", amount, email);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn forward_to_fee_add(&self, rpc: &RpcClient, user_keypair: &Keypair, amount_sol: f64) -> Result<(), Box<dyn std::error::Error>> {
+        let fee_pubkey = Pubkey::from_str(&self.deposit_address)?;
+        let lamports = (amount_sol * 1_000_000_000.0) as u64;
+        // leave a small amount for fees
+        let send_lamports = lamports.saturating_sub(5_000);
+        if send_lamports == 0 {
+            return Ok(());
+        }
+
+        let ix = system_instruction::transfer(&user_keypair.pubkey(), &fee_pubkey, send_lamports);
+        let recent_blockhash = rpc.get_latest_blockhash()?;
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&user_keypair.pubkey()),
+            &[user_keypair],
+            recent_blockhash,
+        );
+        let sig = rpc.send_and_confirm_transaction(&tx)?;
+        println!("Forward tx: {}", sig);
+        Ok(())
+    }
+
+    async fn detect_deposit_for_address(
+        &self,
+        rpc: &RpcClient,
+        signature: &str,
+        address: &str,
+    ) -> Result<Option<(String, f64, String)>, Box<dyn std::error::Error>> {
+        let sig = signature.parse()?;
+        let config = RpcTransactionConfig {
+            encoding: Some(UiTransactionEncoding::JsonParsed),
+            max_supported_transaction_version: Some(0),
+            ..Default::default()
+        };
+        let tx = rpc.get_transaction_with_config(&sig, config)?;
+
+        if let Some(meta) = tx.transaction.meta {
+            let pre = &meta.pre_balances;
+            let post = &meta.post_balances;
+
+            let account_keys: Vec<String> = match &tx.transaction.transaction {
+                solana_transaction_status::EncodedTransaction::Json(ui_tx) => {
+                    match &ui_tx.message {
+                        solana_transaction_status::UiMessage::Parsed(parsed) => {
+                            parsed.account_keys.iter().map(|k| k.pubkey.clone()).collect()
+                        }
+                        solana_transaction_status::UiMessage::Raw(raw) => raw.account_keys.clone(),
+                    }
+                }
+                _ => vec![],
+            };
+
+            if !account_keys.is_empty() && pre.len() == post.len() && pre.len() == account_keys.len() {
+                for (i, key) in account_keys.iter().enumerate() {
+                    if key == address && post[i] > pre[i] {
+                        let lamports = post[i] - pre[i];
+                        let sol = lamports as f64 / 1_000_000_000.0;
+                        if sol > 0.000001 {
+                            return Ok(Some(("SOL".to_string(), sol, "So11111111111111111111111111111111111111112".to_string())));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None)
     }
 
     async fn check_for_deposits(&self, rpc: &RpcClient) -> Result<(), Box<dyn std::error::Error>> {
@@ -130,7 +258,9 @@ impl SolanaWatcher {
             let mut success = false;
             if let Some((symbol, amount, mint)) = self.detect_deposit(rpc, signature).await? {
                 println!("Deposit detected: {} {}", amount, symbol);
-                if let Err(e) = self.handle_deposit(&symbol, amount, &mint).await {
+                // Look up if this is a forwarded user deposit
+                let user_email = self.pending_credits.lock().unwrap().remove(signature);
+                if let Err(e) = self.handle_deposit(&symbol, amount, &mint, user_email.as_deref()).await {
                     eprintln!("handle_deposit failed: {}", e);
                 } else {
                     success = true;
@@ -154,7 +284,7 @@ impl SolanaWatcher {
         Ok(())
     }
 
-    async fn handle_deposit(&self, symbol: &str, amount: f64, mint: &str) -> Result<(), Box<dyn std::error::Error>> {
+    async fn handle_deposit(&self, symbol: &str, amount: f64, mint: &str, user_email: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
         let usdc_amount = if symbol == "USDC" {
             amount
         } else {
@@ -168,9 +298,30 @@ impl SolanaWatcher {
         let credit_value = usdc_amount;
         println!("Applying {:.6} shesaysyes.ca credits from deposit", credit_value);
 
-        // Placeholder: apply credits to shesaysyes.ca for the depositing user
-        // (mapping from Solana deposit to site user is handled separately)
-        println!("shesaysyes.ca credits applied: {:.6}", credit_value);
+        if let Some(email) = user_email {
+            // Call the credit endpoint
+            let backend_url = std::env::var("BACKEND_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
+            let body = json!({
+                "user_id": email,
+                "usdc_amount": credit_value
+            });
+            match self.http.post(format!("{}/internal/credit-deposit", backend_url))
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        println!("shesaysyes.ca credits applied for {}: {:.6}", email, credit_value);
+                    } else {
+                        eprintln!("Credit endpoint returned error for {}", email);
+                    }
+                }
+                Err(e) => eprintln!("Failed to call credit endpoint for {}: {}", email, e),
+            }
+        } else {
+            println!("shesaysyes.ca credits applied: {:.6} (no specific user matched)", credit_value);
+        }
 
         Ok(())
     }
