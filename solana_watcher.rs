@@ -288,7 +288,10 @@ impl SolanaWatcher {
         let usdc_amount = if symbol == "USDC" {
             amount
         } else {
-            self.jupiter_swap(symbol, amount, mint).await?
+            // Leave 0.2% of the SOL on the deposit address for network fees
+            let swap_amount = amount * 0.998;
+            println!("Swapping 99.8% ({:.6} {}) — leaving 0.2% for fees", swap_amount, symbol);
+            self.jupiter_swap(symbol, swap_amount, mint).await?
         };
 
         println!("=== SWAP FUNCTION RETURNED ===");
