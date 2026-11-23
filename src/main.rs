@@ -69,12 +69,12 @@ fn calculate_balances(chain: &[Block]) -> HashMap<String, f64> {
 
 fn save_chain(chain: &[Block]) {
     let json = serde_json::to_string_pretty(chain).unwrap();
-    fs::write("chain.json", json).unwrap();
+    fs::write("/data/chain.json", json).unwrap();
     println!("Chain saved");
 }
 
 fn load_chain() -> Vec<Block> {
-    let content = fs::read_to_string("chain.json").unwrap_or_default();
+    let content = fs::read_to_string("/data/chain.json").unwrap_or_default();
     serde_json::from_str(&content).unwrap_or_default()
 }
 
