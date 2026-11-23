@@ -97,8 +97,11 @@ fn handle_http(stream: &mut std::net::TcpStream, chain: &[Block]) {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let port = args.get(1).unwrap_or(&"7878".to_string()).clone();
-    let addr = format!("127.0.0.1:{}", port);
+    let port = env::var("PORT")
+        .ok()
+        .or_else(|| args.get(1).cloned())
+        .unwrap_or_else(|| "7878".to_string());
+    let addr = format!("0.0.0.0:{}", port);
 
     let mut chain = load_chain();
     if chain.is_empty() {
