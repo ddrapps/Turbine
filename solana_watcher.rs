@@ -29,16 +29,14 @@ pub struct SolanaWatcher {
 }
 
 impl SolanaWatcher {
-    pub fn new(rpc_url: &str, deposit_address: &str, fee_wallet_path: &str, trans_fee_wallet_path: &str) -> Self {
-        let fee_bytes = fs::read(fee_wallet_path).expect("fee_wallet.json not found");
-        let fee_vec: Vec<u8> = serde_json::from_slice(&fee_bytes).expect("invalid fee_wallet json");
+    pub fn new(rpc_url: &str, deposit_address: &str, fee_wallet_key: &str, trans_fee_key: &str) -> Self {
+        let fee_vec: Vec<u8> = serde_json::from_str(fee_wallet_key).expect("invalid FEE_WALLET_KEY json");
         let fee_wallet = Keypair::from_bytes(&fee_vec).expect("invalid fee wallet");
 
-        let trans_fee_bytes = fs::read(trans_fee_wallet_path).expect("trans_fee.json not found");
-        let trans_fee_vec: Vec<u8> = serde_json::from_slice(&trans_fee_bytes).expect("invalid trans_fee json");
+        let trans_fee_vec: Vec<u8> = serde_json::from_str(trans_fee_key).expect("invalid TRANS_FEE json");
         let trans_fee_wallet = Keypair::from_bytes(&trans_fee_vec).expect("invalid trans fee wallet");
 
-        let processed = if let Ok(data) = fs::read_to_string("processed_sigs.txt") {
+        let processed = if let Ok(data) = fs::read_to_string("/data/processed_sigs.txt") {
             data.lines().filter(|l| !l.is_empty()).map(|s| s.to_string()).collect()
         } else {
             HashSet::new()
@@ -93,7 +91,7 @@ impl SolanaWatcher {
                 }
                 if newly_marked > 0 {
                     let _ = fs::write(
-                        "processed_sigs.txt",
+                        "/data/processed_sigs.txt",
                         processed.iter().cloned().collect::<Vec<_>>().join("\n"),
                     );
                     println!("Startup: marked {} recent signatures as seen", newly_marked);
@@ -148,7 +146,7 @@ impl SolanaWatcher {
             let mut processed = self.processed.lock().unwrap();
             if success {
                 processed.insert(signature.clone());
-                let _ = fs::write("processed_sigs.txt", processed.iter().cloned().collect::<Vec<_>>().join("\n"));
+                let _ = fs::write("/data/processed_sigs.txt", processed.iter().cloned().collect::<Vec<_>>().join("\n"));
                 println!("Processed successfully: {}", signature);
             } else {
                 processed.insert(signature.clone());
@@ -305,7 +303,7 @@ impl SolanaWatcher {
             {
                 let mut processed = self.processed.lock().unwrap();
                 processed.insert(sig.to_string());
-                let _ = fs::write("processed_sigs.txt", processed.iter().cloned().collect::<Vec<_>>().join("\n"));
+                let _ = fs::write("/data/processed_sigs.txt", processed.iter().cloned().collect::<Vec<_>>().join("\n"));
             }
 
             println!("Waiting for confirmation...");
@@ -470,11 +468,15 @@ fn credit_on_chain(user_address: &str, amount: f64) -> bool {
 
 #[tokio::main]
 async fn main() {
+    let rpc_url = std::env::var("HELIUS_RPC_URL").expect("HELIUS_RPC_URL not set");
+    let fee_wallet_key = std::env::var("FEE_WALLET_KEY").expect("FEE_WALLET_KEY not set");
+    let trans_fee_key = std::env::var("TRANS_FEE").expect("TRANS_FEE not set");
+
     let watcher = SolanaWatcher::new(
-        "https://mainnet.helius-rpc.com/?api-key=e5dc7a29-c32e-4349-878e-fdf455d78ed2",
+        &rpc_url,
         "DGzDWaxZBWar1qgATna4o1Cjvn4wKWLHveZ3mDcbNg5a",
-        "fee_wallet.json",
-        "trans_fee.json",
+        &fee_wallet_key,
+        &trans_fee_key,
     );
     watcher.run().await;
 }
