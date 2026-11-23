@@ -12,7 +12,7 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn load_users() -> HashMap<String, String> {
-    match fs::read_to_string("users.json") {
+    match fs::read_to_string("/data/users.json") {
         Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
         Err(_) => HashMap::new(),
     }
@@ -20,7 +20,7 @@ fn load_users() -> HashMap<String, String> {
 
 fn save_users(users: &HashMap<String, String>) {
     if let Ok(json) = serde_json::to_string_pretty(users) {
-        let _ = fs::write("users.json", json);
+        let _ = fs::write("/data/users.json", json);
     }
 }
 
