@@ -51,7 +51,11 @@ fn generate_pin() -> String {
 }
 
 fn proxy_to_node(request: &str) -> String {
-    match TcpStream::connect("127.0.0.1:7878") {
+    let node_addr = match std::env::var("NODE_ADDRESS") {
+        Ok(addr) => addr,
+        Err(_) => return "ERROR: NODE_ADDRESS environment variable not set\n".to_string(),
+    };
+    match TcpStream::connect(&node_addr) {
         Ok(mut stream) => {
             let _ = stream.write_all(request.as_bytes());
             let mut reader = BufReader::new(stream);
@@ -245,8 +249,10 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
 fn main() {
     let users = Arc::new(Mutex::new(load_users()));
     let pins = Arc::new(Mutex::new(HashMap::<String, (String, u64)>::new()));
-    let listener = TcpListener::bind("127.0.0.1:3000").unwrap();
-    println!("Web wallet running at http://127.0.0.1:3000");
+    let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = TcpListener::bind(&addr).unwrap();
+    println!("Web wallet running at http://{}", addr);
     for stream in listener.incoming() {
         if let Ok(stream) = stream {
             let users = Arc::clone(&users);
