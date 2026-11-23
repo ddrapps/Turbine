@@ -14,7 +14,6 @@ use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use solana_sdk::signature::{Keypair, Signer as SolanaSigner};
-use SolanaSigner;
 
 fn load_users() -> HashMap<String, String> {
     match fs::read_to_string("/data/users.json") {
