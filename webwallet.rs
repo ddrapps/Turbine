@@ -174,14 +174,14 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
     let (status, content_type, body) = if request_line.contains("POST /check-email") {
         let mut body = String::new();
         let _ = reader.read_line(&mut body);
-        let email = body.trim();
+        let email = body.trim().to_lowercase();
         let users_map = users.lock().unwrap();
-        let result = if users_map.contains_key(email) { "exists" } else { "new" };
+        let result = if users_map.contains_key(&email) { "exists" } else { "new" };
         ("200 OK", "text/plain", result.to_string())
     } else if request_line.contains("POST /send-pin") {
         let mut body = String::new();
         let _ = reader.read_line(&mut body);
-        let email = body.trim().to_string();
+        let email = body.trim().to_lowercase();
         let pin = generate_pin();
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         pins.lock().unwrap().insert(email.clone(), (pin.clone(), now));
@@ -197,16 +197,16 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
         let _ = reader.read_line(&mut body);
         let parts: Vec<&str> = body.trim().split('|').collect();
         if parts.len() == 2 {
-            let email = parts[0];
+            let email = parts[0].to_lowercase();
             let entered = parts[1];
             let mut pins_map = pins.lock().unwrap();
-            if let Some((stored_pin, sent_at)) = pins_map.get(email) {
+            if let Some((stored_pin, sent_at)) = pins_map.get(&email) {
                 let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
                 if now - sent_at > 600 {
-                    pins_map.remove(email);
+                    pins_map.remove(&email);
                     ("401 Unauthorized", "text/plain", "PIN expired".to_string())
                 } else if stored_pin == entered {
-                    pins_map.remove(email);
+                    pins_map.remove(&email);
                     ("200 OK", "text/plain", "OK".to_string())
                 } else {
                     ("401 Unauthorized", "text/plain", "Wrong PIN".to_string())
@@ -220,7 +220,7 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
     } else if request_line.contains("POST /create-wallet") {
         let mut body = String::new();
         let _ = reader.read_line(&mut body);
-        let email = body.trim().to_string();
+        let email = body.trim().to_lowercase();
         let mut users_map = users.lock().unwrap();
         if users_map.contains_key(&email) {
             ("400 Bad Request", "text/plain", "Email already exists".to_string())
@@ -241,12 +241,12 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
         let _ = reader.read_line(&mut body);
         let parts: Vec<&str> = body.trim().split('|').collect();
         if parts.len() == 2 {
-            let email = parts[0];
+            let email = parts[0].to_lowercase();
             let pk = parts[1];
             match derive_address(pk) {
                 Some(addr) => {
                     let users_map = users.lock().unwrap();
-                    if let Some(stored) = users_map.get(email) {
+                    if let Some(stored) = users_map.get(&email) {
                         let stored_parts: Vec<&str> = stored.split('|').collect();
                         if stored_parts.len() >= 1 && stored_parts[0] == addr {
                             let solana_pubkey = if stored_parts.len() > 1 { stored_parts[1] } else { "" };
