@@ -74,6 +74,9 @@
     let sessionBaseline = 0;
     let sessionApplied = 0;
     let creditPoll = null;
+    // Mask the address bar so a copied URL does not reopen the wallet
+    history.replaceState(null, "", "/");
+
 
     // Prefill email from ?email= query param and auto-submit (no PIN)
     (function() {
