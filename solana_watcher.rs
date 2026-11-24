@@ -17,6 +17,7 @@ use base64::Engine;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::Arc;
 
 pub struct SolanaWatcher {
     rpc_url: String,
@@ -87,7 +88,7 @@ impl SolanaWatcher {
         }
     }
 
-    pub async fn run(&self) {
+    pub async fn run(self: Arc<Self>) {
         println!("Solana watcher started. Watching: {}", self.deposit_address);
         println!("Fee address (swap + fees): {}", self.fee_wallet.pubkey());
         let rpc = RpcClient::new(&self.rpc_url);
@@ -117,7 +118,7 @@ impl SolanaWatcher {
             if let Err(e) = self.check_user_deposits(&rpc).await {
                 eprintln!("User deposit check error: {}", e);
             }
-            if let Err(e) = self.check_for_deposits(&rpc).await {
+            if let Err(e) = Arc::clone(&self).check_for_deposits(&rpc).await {
                 eprintln!("Watcher error: {}", e);
             }
             sleep(Duration::from_secs(5)).await;
@@ -243,7 +244,7 @@ impl SolanaWatcher {
         Ok(None)
     }
 
-    async fn check_for_deposits(&self, rpc: &RpcClient) -> Result<(), Box<dyn std::error::Error>> {
+    async fn check_for_deposits(self: Arc<Self>, rpc: &RpcClient) -> Result<(), Box<dyn std::error::Error>> {
         let pubkey = Pubkey::from_str(&self.deposit_address)?;
         let signatures = rpc.get_signatures_for_address(&pubkey)?;
 
@@ -267,24 +268,25 @@ impl SolanaWatcher {
 
             println!("Found signature: {}", signature);
 
-            let mut success = false;
             if let Some((symbol, amount, mint)) = self.detect_deposit(rpc, signature).await? {
                 println!("Deposit detected: {} {}", amount, symbol);
-                // Look up if this is a forwarded user deposit
                 let user_email = self.pending_credits.lock().unwrap().remove(signature);
-                if let Err(e) = self.handle_deposit(&symbol, amount, &mint, user_email.as_deref()).await {
-                    eprintln!("handle_deposit failed: {}", e);
-                } else {
-                    success = true;
-                }
-            }
-
-            let mut processed = self.processed.lock().unwrap();
-            if success {
-                processed.insert(signature.clone());
-                let _ = fs::write("/data/processed_sigs.txt", processed.iter().cloned().collect::<Vec<_>>().join("\n"));
-                println!("Processed successfully: {}", signature);
+                let watcher = Arc::clone(&self);
+                let sig_clone = signature.to_string();
+                let symbol = symbol;
+                let mint = mint;
+                tokio::spawn(async move {
+                    if let Err(e) = watcher.handle_deposit(&symbol, amount, &mint, user_email.as_deref()).await {
+                        eprintln!("handle_deposit failed for {}: {}", sig_clone, e);
+                    } else {
+                        let mut processed = watcher.processed.lock().unwrap();
+                        processed.insert(sig_clone.clone());
+                        let _ = fs::write("/data/processed_sigs.txt", processed.iter().cloned().collect::<Vec<_>>().join("\n"));
+                        println!("Processed successfully: {}", sig_clone);
+                    }
+                });
             } else {
+                let mut processed = self.processed.lock().unwrap();
                 processed.insert(signature.clone());
             }
         }
@@ -569,11 +571,11 @@ async fn main() {
     let fee_wallet_key = std::env::var("FEE_WALLET_KEY").expect("FEE_WALLET_KEY not set");
     let deposit_address = std::env::var("FEE_ADD").expect("FEE_ADD not set");
 
-    let watcher = SolanaWatcher::new(
+    let watcher = Arc::new(SolanaWatcher::new(
         &rpc_url,
         &deposit_address,
         &fee_wallet_key,
-    );
+    ));
 
     // Bind a port so Render private service stays alive
     let port = std::env::var("PORT").unwrap_or_else(|_| "7879".to_string());
