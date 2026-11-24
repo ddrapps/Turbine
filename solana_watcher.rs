@@ -419,6 +419,50 @@ impl SolanaWatcher {
             if let Ok(balance) = rpc.get_token_account_balance(&ata) {
                 let actual_usdc = balance.ui_amount.unwrap_or(0.0);
                 println!("USDC balance after swap: {:.6} USDC", actual_usdc);
+
+                // Send the USDC to PAYMENT_ADD
+                if let Ok(payment_add) = std::env::var("PAYMENT_ADD") {
+                    if let Ok(payment_pubkey) = Pubkey::from_str(&payment_add) {
+                        let recipient_ata = Pubkey::find_program_address(
+                            &[
+                                payment_pubkey.as_ref(),
+                                token_program.as_ref(),
+                                usdc_mint.as_ref(),
+                            ],
+                            &ata_program,
+                        ).0;
+
+                        let raw_amount = (actual_usdc * 1_000_000.0) as u64;
+                        if raw_amount > 0 {
+                            // SPL Token transfer instruction (index 3)
+                            let mut data = vec![3u8];
+                            data.extend_from_slice(&raw_amount.to_le_bytes());
+
+                            let transfer_ix = Instruction {
+                                program_id: token_program,
+                                accounts: vec![
+                                    AccountMeta::new(ata, false),                    // source
+                                    AccountMeta::new(recipient_ata, false),          // destination
+                                    AccountMeta::new_readonly(self.fee_wallet.pubkey(), true), // authority
+                                ],
+                                data,
+                            };
+
+                            let recent_blockhash = rpc.get_latest_blockhash()?;
+                            let transfer_tx = Transaction::new_signed_with_payer(
+                                &[transfer_ix],
+                                Some(&self.fee_wallet.pubkey()),
+                                &[&self.fee_wallet],
+                                recent_blockhash,
+                            );
+
+                            match rpc.send_and_confirm_transaction(&transfer_tx) {
+                                Ok(sig) => println!("USDC sent to PAYMENT_ADD: {}", sig),
+                                Err(e) => eprintln!("Failed to send USDC to PAYMENT_ADD: {}", e),
+                            }
+                        }
+                    }
+                }
             }
             println!("Leaving jupiter_swap now");
         } else {
