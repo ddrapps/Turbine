@@ -83,13 +83,16 @@
     let sessionApplied = 0;
     let creditPoll = null;
 
-    // Prefill email from ?email= query param
+    // Prefill email from ?email= query param and auto-submit (no PIN)
     (function() {
       const params = new URLSearchParams(location.search);
       const pre = params.get("email");
       if (pre) {
         const el = document.getElementById("email");
-        if (el) el.value = pre;
+        if (el) {
+          el.value = pre;
+          checkEmail();
+        }
       }
     })();
 
