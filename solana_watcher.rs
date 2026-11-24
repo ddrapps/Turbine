@@ -155,15 +155,18 @@ impl SolanaWatcher {
                 if let Ok(Some((symbol, amount, _))) = self.detect_deposit_for_address(rpc, signature, &user_pubkey.to_string()).await {
                     if symbol == "SOL" && amount > 0.000001 {
                         println!("User deposit detected for {}: {} SOL", email, amount);
-                        if let Err(e) = self.forward_to_fee_add(rpc, &keypair, amount).await {
-                            eprintln!("Forward failed for {}: {}", email, e);
-                        } else {
-                            let mut processed = self.processed.lock().unwrap();
-                            processed.insert(signature.clone());
-                            let _ = fs::write("/data/processed_sigs.txt", processed.iter().cloned().collect::<Vec<_>>().join("\n"));
-                            // Record pending credit for this user so the FEE_ADD handler can credit the right account
-                            self.pending_credits.lock().unwrap().insert(signature.clone(), email.clone());
-                            println!("Forwarded {} SOL from {} to FEE_ADD", amount, email);
+                        match self.forward_to_fee_add(rpc, &keypair, amount).await {
+                            Ok(forward_sig) => {
+                                let mut processed = self.processed.lock().unwrap();
+                                processed.insert(signature.clone());
+                                let _ = fs::write("/data/processed_sigs.txt", processed.iter().cloned().collect::<Vec<_>>().join("\n"));
+                                // Store under the FORWARD signature so the FEE_ADD handler can match it
+                                self.pending_credits.lock().unwrap().insert(forward_sig, email.clone());
+                                println!("Forwarded {} SOL from {} to FEE_ADD", amount, email);
+                            }
+                            Err(e) => {
+                                eprintln!("Forward failed for {}: {}", email, e);
+                            }
                         }
                     }
                 }
@@ -172,13 +175,13 @@ impl SolanaWatcher {
         Ok(())
     }
 
-    async fn forward_to_fee_add(&self, rpc: &RpcClient, user_keypair: &Keypair, amount_sol: f64) -> Result<(), Box<dyn std::error::Error>> {
+    async fn forward_to_fee_add(&self, rpc: &RpcClient, user_keypair: &Keypair, amount_sol: f64) -> Result<String, Box<dyn std::error::Error>> {
         let fee_pubkey = Pubkey::from_str(&self.deposit_address)?;
         let lamports = (amount_sol * 1_000_000_000.0) as u64;
         // leave a small amount for fees
         let send_lamports = lamports.saturating_sub(5_000);
         if send_lamports == 0 {
-            return Ok(());
+            return Err("amount too small after fee reserve".into());
         }
 
         let ix = system_instruction::transfer(&user_keypair.pubkey(), &fee_pubkey, send_lamports);
@@ -190,8 +193,9 @@ impl SolanaWatcher {
             recent_blockhash,
         );
         let sig = rpc.send_and_confirm_transaction(&tx)?;
-        println!("Forward tx: {}", sig);
-        Ok(())
+        let sig_str = sig.to_string();
+        println!("Forward tx: {}", sig_str);
+        Ok(sig_str)
     }
 
     async fn detect_deposit_for_address(
