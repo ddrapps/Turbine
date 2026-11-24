@@ -9,8 +9,8 @@
     #address, #solana-address { font-family: monospace; word-break: break-all; }
     #credits-applied { font-size: 1.6em; font-weight: bold; color: #2a7; margin: 8px 0; }
     #cashout-result { margin-top: 12px; }
-    #login-box, #confirm-box, #newkey-box { border: 1px solid #ccc; padding: 16px; border-radius: 6px; margin-bottom: 20px; }
-    #wallet-box, #confirm-box, #newkey-box { display: none; }
+    #login-box, #confirm-box { border: 1px solid #ccc; padding: 16px; border-radius: 6px; margin-bottom: 20px; }
+    #wallet-box, #confirm-box { display: none; }
     @media (max-width: 600px) {
       body { max-width: 100%; padding: 12px; }
     }
@@ -33,14 +33,6 @@
     <button onclick="confirmEmail()">Confirm</button>
     <button onclick="changeEmail()">Change email</button>
     <div id="confirm-msg"></div>
-  </div>
-
-  <div id="newkey-box">
-    <h3>Your new wallet</h3>
-    <p>Save this private key. You will need it every time you log in. It will not be shown again.</p>
-    <p><strong>Private key:</strong><br><span id="new-private-key" style="font-family:monospace;white-space:pre-wrap;word-break:break-all;display:block;"></span></p>
-    <p><strong>Address:</strong><br><span id="new-address" style="font-family:monospace;white-space:pre-wrap;word-break:break-all;display:block;"></span></p>
-    <button onclick="finishNewWallet()">I Saved It.... Continue</button>
   </div>
 
   <div id="wallet-box">
@@ -184,27 +176,20 @@
         const createText = await create.text();
         if (create.ok) {
           const parts = createText.trim().split("|");
-          document.getElementById("new-private-key").textContent = parts[0];
-          document.getElementById("new-address").textContent = parts[1];
           myPrivateKey = parts[0];
           myAddress = parts[1];
           mySolanaAddress = parts[2] || "";
           document.getElementById("confirm-box").style.display = "none";
-          document.getElementById("newkey-box").style.display = "block";
+          document.getElementById("wallet-box").style.display = "block";
+          document.getElementById("address").textContent = myAddress;
+          document.getElementById("solana-address").textContent = mySolanaAddress;
+          loadBalance();
         } else {
           document.getElementById("confirm-msg").textContent = createText;
         }
       } catch (e) {
         document.getElementById("confirm-msg").textContent = "Error: " + e;
       }
-    }
-
-    function finishNewWallet() {
-      document.getElementById("newkey-box").style.display = "none";
-      document.getElementById("wallet-box").style.display = "block";
-      document.getElementById("address").textContent = myAddress;
-      document.getElementById("solana-address").textContent = mySolanaAddress;
-      loadBalance();
     }
 
     async function loginReturning() {
@@ -257,8 +242,7 @@
       document.getElementById("login-box").style.display = "block";
       document.getElementById("wallet-box").style.display = "none";
       document.getElementById("confirm-box").style.display = "none";
-      document.getElementById("newkey-box").style.display = "none";
-      document.getElementById("returning-box").style.display = "none";
+            document.getElementById("returning-box").style.display = "none";
       document.getElementById("login-msg").textContent = "";
     }
 
