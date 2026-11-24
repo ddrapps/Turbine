@@ -116,15 +116,44 @@
         });
         const text = await res.text();
         if (text.trim() === "exists") {
-          document.getElementById("returning-email").textContent = email;
-          document.getElementById("login-box").style.display = "none";
-          document.getElementById("returning-box").style.display = "block";
+          // Existing wallet — load by email only
+          const get = await fetch("/get-wallet", {
+            method: "POST",
+            body: email + "\n"
+          });
+          const getText = await get.text();
+          if (get.ok) {
+            const parts = getText.trim().split("|");
+            myAddress = parts[0] || "";
+            mySolanaAddress = parts[1] || "";
+            document.getElementById("login-box").style.display = "none";
+            document.getElementById("wallet-box").style.display = "block";
+            document.getElementById("address").textContent = myAddress;
+            document.getElementById("solana-address").textContent = mySolanaAddress;
+            loadBalance();
+          } else {
+            document.getElementById("login-msg").textContent = getText;
+          }
         } else {
-          document.getElementById("confirm-email").textContent = email;
-          document.getElementById("login-box").style.display = "none";
-          document.getElementById("confirm-box").style.display = "block";
-          // Trigger PIN send
-          await fetch("/send-pin", { method: "POST", body: email + "\n" });
+          // New wallet — create and go straight in
+          const create = await fetch("/create-wallet", {
+            method: "POST",
+            body: email + "\n"
+          });
+          const createText = await create.text();
+          if (create.ok) {
+            const parts = createText.trim().split("|");
+            myPrivateKey = parts[0] || "";
+            myAddress = parts[1] || "";
+            mySolanaAddress = parts[2] || "";
+            document.getElementById("login-box").style.display = "none";
+            document.getElementById("wallet-box").style.display = "block";
+            document.getElementById("address").textContent = myAddress;
+            document.getElementById("solana-address").textContent = mySolanaAddress;
+            loadBalance();
+          } else {
+            document.getElementById("login-msg").textContent = createText;
+          }
         }
       } catch (e) {
         document.getElementById("login-msg").textContent = "Error: " + e;

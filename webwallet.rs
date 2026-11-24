@@ -252,6 +252,23 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
             save_solana_keys(&solana_map);
             ("200 OK", "text/plain", format!("{}|{}|{}", priv_hex, addr, solana_pubkey))
         }
+    } else if request_line.contains("POST /get-wallet") {
+        let mut body = String::new();
+        let _ = reader.read_line(&mut body);
+        let email = body.trim().to_lowercase();
+        let users_map = users.lock().unwrap();
+        if let Some(stored) = users_map.get(&email) {
+            let stored_parts: Vec<&str> = stored.split('|').collect();
+            if stored_parts.len() >= 1 {
+                let addr = stored_parts[0];
+                let solana_pubkey = if stored_parts.len() > 1 { stored_parts[1] } else { "" };
+                ("200 OK", "text/plain", format!("{}|{}", addr, solana_pubkey))
+            } else {
+                ("404 Not Found", "text/plain", "Wallet not found".to_string())
+            }
+        } else {
+            ("404 Not Found", "text/plain", "Wallet not found".to_string())
+        }
     } else if request_line.contains("POST /login") {
         let mut body = String::new();
         let _ = reader.read_line(&mut body);
