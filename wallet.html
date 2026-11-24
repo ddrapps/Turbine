@@ -87,6 +87,9 @@
     let myPrivateKey = "";
     let mySolanaAddress = "";
     let pendingEmail = "";
+    let sessionBaseline = 0;
+    let sessionApplied = 0;
+    let creditPoll = null;
 
     // Prefill email from ?email= query param
     (function() {
@@ -219,6 +222,10 @@
       myPrivateKey = "";
       mySolanaAddress = "";
       pendingEmail = "";
+      sessionBaseline = 0;
+      sessionApplied = 0;
+      if (creditPoll) { clearInterval(creditPoll); creditPoll = null; }
+      document.getElementById("credits-applied").textContent = "0.000000";
       document.getElementById("login-box").style.display = "block";
       document.getElementById("wallet-box").style.display = "none";
       document.getElementById("confirm-box").style.display = "none";
@@ -230,9 +237,36 @@
     async function loadBalance() {
       if (!myAddress) return;
       document.getElementById("out").textContent = "Loading...";
-      // Transient: always show 0 until a new deposit is processed this session
-      document.getElementById("credits-applied").textContent = "0.000000";
+      document.getElementById("credits-applied").textContent = sessionApplied.toFixed(6);
       document.getElementById("out").textContent = "Ready. Deposit SOL to apply shesaysyes.ca credits.";
+      startCreditPoll();
+    }
+
+    async function startCreditPoll() {
+      if (creditPoll) clearInterval(creditPoll);
+      if (!pendingEmail) return;
+      // Capture baseline once on login
+      try {
+        const res = await fetch("https://shesaysyes-backend.onrender.com/credits/" + encodeURIComponent(pendingEmail));
+        if (res.ok) {
+          const data = await res.json();
+          sessionBaseline = parseFloat(data.credits) || 0;
+        }
+      } catch (e) {}
+      creditPoll = setInterval(async () => {
+        try {
+          const res = await fetch("https://shesaysyes-backend.onrender.com/credits/" + encodeURIComponent(pendingEmail));
+          if (res.ok) {
+            const data = await res.json();
+            const current = parseFloat(data.credits) || 0;
+            const applied = Math.max(0, current - sessionBaseline);
+            if (applied > sessionApplied) {
+              sessionApplied = applied;
+              document.getElementById("credits-applied").textContent = sessionApplied.toFixed(6);
+            }
+          }
+        } catch (e) {}
+      }, 5000);
     }
 
     async function loadHistory() {
@@ -261,7 +295,10 @@
         });
         const text = await res.text();
         document.getElementById("out").textContent = "Send result:\n" + text;
+        sessionApplied = 0;
+        document.getElementById("credits-applied").textContent = "0.000000";
         setTimeout(loadBalance, 500);
+
       } catch (e) {
         document.getElementById("out").textContent = "Error: " + e;
       }
