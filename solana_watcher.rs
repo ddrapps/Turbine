@@ -16,7 +16,7 @@ use serde_json::json;
 use base64::Engine;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 
 pub struct SolanaWatcher {
     rpc_url: String,
@@ -570,5 +570,25 @@ async fn main() {
         &deposit_address,
         &fee_wallet_key,
     );
+
+    // Bind a port so Render private service stays alive
+    let port = std::env::var("PORT").unwrap_or_else(|_| "7879".to_string());
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = TcpListener::bind(&addr).expect("failed to bind watcher port");
+    println!("Watcher listening on {}", addr);
+
+    // Accept connections in a background thread; main loop continues
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            if let Ok(mut stream) = stream {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let reply = if line.trim() == "PING" { "PONG\n" } else { "OK\n" };
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        }
+    });
+
     watcher.run().await;
 }

@@ -88,6 +88,22 @@ fn send_pin_email(to: &str, pin: &str) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
+fn proxy_to_watcher(request: &str) -> String {
+    let watcher_addr = match std::env::var("WATCHER_ADDRESS") {
+        Ok(addr) => addr,
+        Err(_) => return "ERROR: WATCHER_ADDRESS environment variable not set\n".to_string(),
+    };
+    match TcpStream::connect(&watcher_addr) {
+        Ok(mut stream) => {
+            let _ = stream.write_all(request.as_bytes());
+            let mut reader = BufReader::new(stream);
+            let mut response = String::new();
+            let _ = reader.read_line(&mut response);
+            response
+        }
+        Err(_) => "ERROR: Watcher not running\n".to_string(),
+    }
+}
 fn proxy_to_node(request: &str) -> String {
     let node_addr = match std::env::var("NODE_ADDRESS") {
         Ok(addr) => addr,
@@ -263,6 +279,8 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
         } else {
             ("400 Bad Request", "text/plain", "email|privatekey required".to_string())
         }
+    } else if request_line.contains("GET /watcher-ping") {
+        ("200 OK", "text/plain", proxy_to_watcher("PING\n"))
     } else if request_line.contains("GET /balance") {
         ("200 OK", "application/json", proxy_to_node("GET_BALANCES\n"))
     } else if request_line.contains("GET /chain") {
