@@ -120,7 +120,7 @@ impl SolanaWatcher {
             if let Err(e) = self.check_for_deposits(&rpc).await {
                 eprintln!("Watcher error: {}", e);
             }
-            sleep(Duration::from_secs(20)).await;
+            sleep(Duration::from_secs(5)).await;
         }
     }
 
