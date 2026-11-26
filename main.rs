@@ -168,6 +168,15 @@ fn main() {
                                 let _ = stream.write_all(b"REJECTED\n");
                                 continue;
                             }
+                            // Privileged senders must present the shared secret in the signature field
+                            if tx.from == "deposit" || tx.from == "cashout" {
+                                let expected = env::var("DEPOSIT_SECRET").unwrap_or_default();
+                                if expected.is_empty() || tx.signature != expected {
+                                    println!("Rejected - bad deposit secret");
+                                    let _ = stream.write_all(b"REJECTED\n");
+                                    continue;
+                                }
+                            }
                             let balances = calculate_balances(&chain);
                             let sender_balance = balances.get(&tx.from).copied().unwrap_or(0.0);
                             if tx.from != "genesis" && tx.from != "premine" && tx.from != "deposit" && tx.from != "cashout" && sender_balance < volume {

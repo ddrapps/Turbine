@@ -157,7 +157,11 @@ fn handle_cashout(address: &str, amount_str: &str) -> String {
         return "ERROR: Could not get tip from node\n".to_string();
     }
 
-    let tx_line = format!("{}|cashout|{}|{}||\n", tip, address, amount);
+    let secret = std::env::var("DEPOSIT_SECRET").unwrap_or_default();
+    if secret.is_empty() {
+        return "ERROR: DEPOSIT_SECRET not set\n".to_string();
+    }
+    let tx_line = format!("{}|cashout|{}|{}|{}|\n", tip, address, amount, secret);
     let result = proxy_to_node(&tx_line);
 
     if result.trim() == "OK" {
@@ -189,13 +193,18 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
     let mut request_line = String::new();
     let _ = reader.read_line(&mut request_line);
 
-    // Skip headers until blank line
+    // Read headers and capture X-Keys-Secret
+    let mut keys_secret_header = String::new();
     let mut line = String::new();
     loop {
         line.clear();
         let _ = reader.read_line(&mut line);
         if line.trim().is_empty() {
             break;
+        }
+        let lower = line.to_lowercase();
+        if lower.starts_with("x-keys-secret:") {
+            keys_secret_header = line.splitn(2, ':').nth(1).unwrap_or("").trim().to_string();
         }
     }
 
@@ -336,7 +345,7 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
         ("200 OK", "text/html", result)
     } else if request_line.contains("GET /solana-keys") {
         let expected = std::env::var("KEYS_SECRET").unwrap_or_default();
-        let ok = !expected.is_empty() && request_line.contains(&format!("secret={}", expected));
+        let ok = !expected.is_empty() && keys_secret_header == expected;
         if !ok {
             ("401 Unauthorized", "text/plain", "Unauthorized".to_string())
         } else {

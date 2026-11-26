@@ -80,8 +80,16 @@ impl SolanaWatcher {
     async fn load_user_solana_keys(&self) -> HashMap<String, String> {
         let base = std::env::var("WEBWALLET_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
         let secret = std::env::var("KEYS_SECRET").unwrap_or_default();
-        let url = format!("{}/solana-keys?secret={}", base, secret);
-        match self.http.get(&url).send().await {
+        if secret.is_empty() {
+            eprintln!("KEYS_SECRET not set — refusing to fetch user keys");
+            return HashMap::new();
+        }
+        let url = format!("{}/solana-keys", base);
+        match self.http.get(&url)
+            .header("X-Keys-Secret", &secret)
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 match resp.json::<HashMap<String, String>>().await {
                     Ok(map) => map,
@@ -374,11 +382,17 @@ impl SolanaWatcher {
 
         if let Some(email) = user_email {
             let backend_url = std::env::var("BACKEND_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
+            let credit_secret = std::env::var("CREDIT_SECRET").unwrap_or_default();
+            if credit_secret.is_empty() {
+                eprintln!("CREDIT_SECRET not set — refusing to credit {}", email);
+                return Ok(());
+            }
             let body = json!({
                 "user_id": email,
                 "usdc_amount": credit_value
             });
             match self.http.post(format!("{}/internal/credit-deposit", backend_url))
+                .header("X-Credit-Secret", &credit_secret)
                 .json(&body)
                 .send()
                 .await
