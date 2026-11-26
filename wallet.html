@@ -93,6 +93,16 @@
           el.value = preEmail;
           checkEmail();
         }
+      } else {
+        // Restore previous session on refresh
+        const saved = localStorage.getItem("horcrux_email");
+        if (saved) {
+          const el = document.getElementById("email");
+          if (el) {
+            el.value = saved;
+            checkEmail();
+          }
+        }
       }
     })();
 
@@ -125,6 +135,7 @@
             document.getElementById("wallet-box").style.display = "block";
             document.getElementById("address").textContent = myAddress;
             document.getElementById("solana-address").textContent = mySolanaAddress;
+            localStorage.setItem("horcrux_email", email);
             loadBalance();
           } else {
             document.getElementById("login-msg").textContent = getText;
@@ -145,6 +156,7 @@
             document.getElementById("wallet-box").style.display = "block";
             document.getElementById("address").textContent = myAddress;
             document.getElementById("solana-address").textContent = mySolanaAddress;
+            localStorage.setItem("horcrux_email", email);
             loadBalance();
           } else {
             document.getElementById("login-msg").textContent = createText;
@@ -191,6 +203,7 @@
           document.getElementById("wallet-box").style.display = "block";
           document.getElementById("address").textContent = myAddress;
           document.getElementById("solana-address").textContent = mySolanaAddress;
+          localStorage.setItem("horcrux_email", pendingEmail);
           loadBalance();
         } else {
           document.getElementById("confirm-msg").textContent = createText;
@@ -221,6 +234,7 @@
           document.getElementById("wallet-box").style.display = "block";
           document.getElementById("address").textContent = myAddress;
           document.getElementById("solana-address").textContent = mySolanaAddress;
+          localStorage.setItem("horcrux_email", pendingEmail);
           loadBalance();
         } else {
           document.getElementById("returning-msg").textContent = text;
@@ -252,6 +266,7 @@
       document.getElementById("confirm-box").style.display = "none";
             document.getElementById("returning-box").style.display = "none";
       document.getElementById("login-msg").textContent = "";
+      localStorage.removeItem("horcrux_email");
     }
 
     async function loadBalance() {
