@@ -170,7 +170,26 @@ impl SolanaWatcher {
                             }
                         }
                         println!("WebSocket found signature: {}", signature);
-                        if let Some((symbol, amount, mint)) = self.detect_deposit(&rpc, &signature).await? {
+                        // Retry a couple of times — very new txs can return null briefly
+                        let mut detected = None;
+                        for attempt in 0..3 {
+                            match self.detect_deposit(&rpc, &signature).await {
+                                Ok(Some(d)) => {
+                                    detected = Some(d);
+                                    break;
+                                }
+                                Ok(None) => {
+                                    if attempt < 2 {
+                                        sleep(Duration::from_millis(800)).await;
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("detect_deposit error (continuing): {}", e);
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some((symbol, amount, mint)) = detected {
                             println!("Deposit detected: {} {}", amount, symbol);
                             let user_email = self.pending_credits.lock().unwrap().remove(&signature);
                             let watcher = Arc::new(self.clone_for_spawn());
@@ -289,13 +308,24 @@ impl SolanaWatcher {
         signature: &str,
         address: &str,
     ) -> Result<Option<(String, f64, String)>, Box<dyn std::error::Error>> {
-        let sig = signature.parse()?;
+        let sig = match signature.parse() {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
+        };
         let config = RpcTransactionConfig {
             encoding: Some(UiTransactionEncoding::JsonParsed),
             max_supported_transaction_version: Some(0),
             ..Default::default()
         };
-        let tx = rpc.get_transaction_with_config(&sig, config)?;
+
+        // Transaction may not be fully available yet — treat null/error as "not ready"
+        let tx = match rpc.get_transaction_with_config(&sig, config) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("detect_deposit_for_address: tx not ready for {}: {}", signature, e);
+                return Ok(None);
+            }
+        };
 
         if let Some(meta) = tx.transaction.meta {
             let pre = &meta.pre_balances;
@@ -508,13 +538,24 @@ impl SolanaWatcher {
         rpc: &RpcClient,
         signature: &str,
     ) -> Result<Option<(String, f64, String)>, Box<dyn std::error::Error>> {
-        let sig = signature.parse()?;
+        let sig = match signature.parse() {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
+        };
         let config = RpcTransactionConfig {
             encoding: Some(UiTransactionEncoding::JsonParsed),
             max_supported_transaction_version: Some(0),
             ..Default::default()
         };
-        let tx = rpc.get_transaction_with_config(&sig, config)?;
+
+        // Transaction may not be fully available yet — treat null/error as "not ready"
+        let tx = match rpc.get_transaction_with_config(&sig, config) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("detect_deposit: tx not ready for {}: {}", signature, e);
+                return Ok(None);
+            }
+        };
 
         if let Some(meta) = tx.transaction.meta {
             let pre = &meta.pre_balances;
