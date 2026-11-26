@@ -172,6 +172,18 @@ fn handle_cashout(address: &str, amount_str: &str) -> String {
     }
 }
 
+fn content_type_for(path: &str) -> &'static str {
+    if path.ends_with(".mp4") { "video/mp4" }
+    else if path.ends_with(".webm") { "video/webm" }
+    else if path.ends_with(".png") { "image/png" }
+    else if path.ends_with(".jpg") || path.ends_with(".jpeg") { "image/jpeg" }
+    else if path.ends_with(".gif") { "image/gif" }
+    else if path.ends_with(".svg") { "image/svg+xml" }
+    else if path.ends_with(".css") { "text/css" }
+    else if path.ends_with(".js") { "application/javascript" }
+    else { "application/octet-stream" }
+}
+
 fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>>>, pins: Arc<Mutex<HashMap<String, (String, u64)>>>, solana_keys: Arc<Mutex<HashMap<String, String>>>) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut request_line = String::new();
@@ -331,6 +343,28 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
             let map = solana_keys.lock().unwrap();
             let body = serde_json::to_string(&*map).unwrap_or_else(|_| "{}".to_string());
             ("200 OK", "application/json", body)
+        }
+    } else if request_line.starts_with("GET /assets/") {
+        let path_part = request_line.split_whitespace().nth(1).unwrap_or("");
+        let rel = path_part.trim_start_matches("/assets/");
+        let safe = rel.split('?').next().unwrap_or("");
+        if safe.contains("..") || safe.is_empty() {
+            ("400 Bad Request", "text/plain", "Bad path".to_string())
+        } else {
+            let file_path = format!("assets/{}", safe);
+            match fs::read(&file_path) {
+                Ok(bytes) => {
+                    let ct = content_type_for(&file_path);
+                    let http = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccept-Ranges: bytes\r\n\r\n",
+                        ct, bytes.len()
+                    );
+                    let _ = stream.write_all(http.as_bytes());
+                    let _ = stream.write_all(&bytes);
+                    return;
+                }
+                Err(_) => ("404 Not Found", "text/plain", "Asset not found".to_string()),
+            }
         }
     } else if request_line.contains("GET /") || request_line.contains("GET /index") {
         ("200 OK", "text/html", fs::read_to_string("wallet.html").unwrap_or_else(|_| "Missing wallet.html".to_string()))
