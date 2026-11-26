@@ -97,27 +97,6 @@ impl SolanaWatcher {
         println!("Fee address (swap + fees): {}", self.fee_wallet.pubkey());
         let rpc = RpcClient::new(&self.rpc_url);
 
-        if let Ok(pubkey) = Pubkey::from_str(&self.deposit_address) {
-            if let Ok(signatures) = rpc.get_signatures_for_address(&pubkey) {
-                let mut processed = self.processed.lock().unwrap();
-                let mut newly_marked = 0;
-                for sig in signatures.iter().take(5) {
-                    if processed.insert(sig.signature.clone()) {
-                        newly_marked += 1;
-                    }
-                }
-                if newly_marked > 0 {
-                    let _ = fs::write(
-                        "/data/processed_sigs.txt",
-                        processed.iter().cloned().collect::<Vec<_>>().join("\n"),
-                    );
-                    println!("Startup: marked {} recent signatures as seen", newly_marked);
-                } else {
-                    println!("Startup: recent signatures already marked as seen");
-                }
-            }
-        }
-
         // Spawn the WebSocket deposit listener
         let watcher_ws = Arc::clone(&self);
         tokio::spawn(async move {
