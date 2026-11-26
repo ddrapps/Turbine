@@ -41,4 +41,4 @@ futures-util = "0.3"
 bincode = "1"
 base64 = "0.22"
 lettre = { version = "0.11", features = ["tokio1", "native-tls", "tokio1-native-tls"] }
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
