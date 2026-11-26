@@ -193,8 +193,9 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
     let mut request_line = String::new();
     let _ = reader.read_line(&mut request_line);
 
-    // Read headers and capture X-Keys-Secret
+    // Read headers and capture X-Keys-Secret and Range
     let mut keys_secret_header = String::new();
+    let mut range_header = String::new();
     let mut line = String::new();
     loop {
         line.clear();
@@ -205,6 +206,8 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
         let lower = line.to_lowercase();
         if lower.starts_with("x-keys-secret:") {
             keys_secret_header = line.splitn(2, ':').nth(1).unwrap_or("").trim().to_string();
+        } else if lower.starts_with("range:") {
+            range_header = line.splitn(2, ':').nth(1).unwrap_or("").trim().to_string();
         }
     }
 
@@ -364,12 +367,29 @@ fn handle_client(mut stream: TcpStream, users: Arc<Mutex<HashMap<String, String>
             match fs::read(&file_path) {
                 Ok(bytes) => {
                     let ct = content_type_for(&file_path);
-                    let http = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccept-Ranges: bytes\r\n\r\n",
-                        ct, bytes.len()
+                    let total = bytes.len();
+                    let (start, end, status) = if range_header.starts_with("bytes=") {
+                        let spec = range_header.trim_start_matches("bytes=");
+                        let mut parts = spec.splitn(2, '-');
+                        let s = parts.next().unwrap_or("").parse::<usize>().unwrap_or(0);
+                        let e = parts.next().and_then(|p| if p.is_empty() { None } else { p.parse::<usize>().ok() }).unwrap_or(total.saturating_sub(1));
+                        let s = s.min(total.saturating_sub(1));
+                        let e = e.min(total.saturating_sub(1)).max(s);
+                        (s, e, "206 Partial Content")
+                    } else {
+                        (0, total.saturating_sub(1), "200 OK")
+                    };
+                    let slice = if total == 0 { &bytes[..] } else { &bytes[start..=end] };
+                    let mut http = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccept-Ranges: bytes\r\nCache-Control: no-cache\r\n",
+                        status, ct, slice.len()
                     );
+                    if status.starts_with("206") {
+                        http.push_str(&format!("Content-Range: bytes {}-{}/{}\r\n", start, end, total));
+                    }
+                    http.push_str("\r\n");
                     let _ = stream.write_all(http.as_bytes());
-                    let _ = stream.write_all(&bytes);
+                    let _ = stream.write_all(slice);
                     return;
                 }
                 Err(_) => ("404 Not Found", "text/plain", "Asset not found".to_string()),
