@@ -27,10 +27,10 @@ pub struct SolanaWatcher {
     deposit_address: String,
     fee_wallet: Keypair,
     last_seen: Mutex<Option<String>>,
-    processed: Mutex<HashSet<String>>,
+    processed: Arc<Mutex<HashSet<String>>>,
     http: Client,
     mint_to_symbol: HashMap<String, String>,
-    pending_credits: Mutex<HashMap<String, String>>,
+    pending_credits: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl SolanaWatcher {
@@ -52,10 +52,10 @@ impl SolanaWatcher {
             deposit_address: deposit_address.to_string(),
             fee_wallet,
             last_seen: Mutex::new(None),
-            processed: Mutex::new(processed),
+            processed: Arc::new(Mutex::new(processed)),
             http: Client::new(),
             mint_to_symbol,
-            pending_credits: Mutex::new(HashMap::new()),
+            pending_credits: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -97,7 +97,7 @@ impl SolanaWatcher {
         println!("Fee address (swap + fees): {}", self.fee_wallet.pubkey());
         let rpc = RpcClient::new(&self.rpc_url);
 
-        // Spawn the WebSocket deposit listener
+        // Spawn the WebSocket deposit listener (shared Arc so pending_credits + processed stay in sync)
         let watcher_ws = Arc::clone(&self);
         tokio::spawn(async move {
             loop {
@@ -109,12 +109,12 @@ impl SolanaWatcher {
             }
         });
 
-        // Keep the user deposit check on a short poll (less frequent traffic)
+        // User deposit check on a short poll
         loop {
             if let Err(e) = self.check_user_deposits(&rpc).await {
                 eprintln!("User deposit check error: {}", e);
             }
-            sleep(Duration::from_secs(15)).await;
+            sleep(Duration::from_secs(10)).await;
         }
     }
 
@@ -170,11 +170,31 @@ impl SolanaWatcher {
                         }
                         if let Some((symbol, amount, mint)) = detected {
                             println!("Deposit detected: {} {}", amount, symbol);
-                            let user_email = self.pending_credits.lock().unwrap().remove(&signature);
-                            let watcher = Arc::new(self.clone_for_spawn());
+
+                            // Look up the user email stored under this exact signature.
+                            // Retry briefly — the forward may still be writing the entry.
+                            let mut user_email = None;
+                            for _ in 0..5 {
+                                {
+                                    let mut pending = self.pending_credits.lock().unwrap();
+                                    if let Some(e) = pending.remove(&signature) {
+                                        user_email = Some(e);
+                                        break;
+                                    }
+                                }
+                                sleep(Duration::from_millis(400)).await;
+                            }
+                            if let Some(ref e) = user_email {
+                                println!("Matched user {} for signature {}", e, signature);
+                            } else {
+                                println!("No pending user for signature {} (direct deposit or already claimed)", signature);
+                            }
+
+                            let watcher = Arc::new(self.clone_shared());
                             let sig_clone = signature.clone();
+                            let email_owned = user_email.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = watcher.handle_deposit(&symbol, amount, &mint, user_email.as_deref()).await {
+                                if let Err(e) = watcher.handle_deposit(&symbol, amount, &mint, email_owned.as_deref()).await {
                                     eprintln!("handle_deposit failed for {}: {}", sig_clone, e);
                                 } else {
                                     let mut processed = watcher.processed.lock().unwrap();
@@ -194,18 +214,18 @@ impl SolanaWatcher {
         Ok(())
     }
 
-    // Helper so we can spawn without full Arc clone issues in the listener
-    fn clone_for_spawn(&self) -> SolanaWatcher {
+    // Shared clone: same processed set and pending_credits so concurrent tasks stay consistent
+    fn clone_shared(&self) -> SolanaWatcher {
         SolanaWatcher {
             rpc_url: self.rpc_url.clone(),
             ws_url: self.ws_url.clone(),
             deposit_address: self.deposit_address.clone(),
             fee_wallet: Keypair::from_bytes(&self.fee_wallet.to_bytes()).expect("clone key"),
             last_seen: Mutex::new(None),
-            processed: Mutex::new(self.processed.lock().unwrap().clone()),
+            processed: Arc::clone(&self.processed),
             http: Client::new(),
             mint_to_symbol: self.mint_to_symbol.clone(),
-            pending_credits: Mutex::new(HashMap::new()),
+            pending_credits: Arc::clone(&self.pending_credits),
         }
     }
 
