@@ -18,9 +18,12 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+use futures_util::{StreamExt, SinkExt};
 
 pub struct SolanaWatcher {
     rpc_url: String,
+    ws_url: String,
     deposit_address: String,
     fee_wallet: Keypair,
     last_seen: Mutex<Option<String>>,
@@ -31,7 +34,7 @@ pub struct SolanaWatcher {
 }
 
 impl SolanaWatcher {
-    pub fn new(rpc_url: &str, deposit_address: &str, fee_wallet_key: &str) -> Self {
+    pub fn new(rpc_url: &str, ws_url: &str, deposit_address: &str, fee_wallet_key: &str) -> Self {
         let fee_vec: Vec<u8> = serde_json::from_str(fee_wallet_key).expect("invalid FEE_WALLET_KEY json");
         let fee_wallet = Keypair::from_bytes(&fee_vec).expect("invalid fee wallet");
 
@@ -45,6 +48,7 @@ impl SolanaWatcher {
 
         Self {
             rpc_url: rpc_url.to_string(),
+            ws_url: ws_url.to_string(),
             deposit_address: deposit_address.to_string(),
             fee_wallet,
             last_seen: Mutex::new(None),
@@ -114,14 +118,96 @@ impl SolanaWatcher {
             }
         }
 
+        // Spawn the WebSocket deposit listener
+        let watcher_ws = Arc::clone(&self);
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = watcher_ws.listen_deposits().await {
+                    eprintln!("WebSocket listener error: {}", e);
+                }
+                eprintln!("WebSocket disconnected, reconnecting in 5s...");
+                sleep(Duration::from_secs(5)).await;
+            }
+        });
+
+        // Keep the user deposit check on a short poll (less frequent traffic)
         loop {
             if let Err(e) = self.check_user_deposits(&rpc).await {
                 eprintln!("User deposit check error: {}", e);
             }
-            if let Err(e) = Arc::clone(&self).check_for_deposits(&rpc).await {
-                eprintln!("Watcher error: {}", e);
+            sleep(Duration::from_secs(15)).await;
+        }
+    }
+
+    async fn listen_deposits(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let (ws_stream, _) = connect_async(&self.ws_url).await?;
+        let (mut write, mut read) = ws_stream.split();
+
+        let pubkey = Pubkey::from_str(&self.deposit_address)?;
+        let sub_msg = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "logsSubscribe",
+            "params": [
+                { "mentions": [pubkey.to_string()] },
+                { "commitment": "confirmed" }
+            ]
+        });
+        write.send(Message::Text(sub_msg.to_string())).await?;
+
+        let rpc = RpcClient::new(&self.rpc_url);
+
+        while let Some(msg) = read.next().await {
+            let msg = msg?;
+            if let Message::Text(text) = msg {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if let Some(sig) = val["params"]["result"]["value"]["signature"].as_str() {
+                        let signature = sig.to_string();
+                        {
+                            let processed = self.processed.lock().unwrap();
+                            if processed.contains(&signature) {
+                                continue;
+                            }
+                        }
+                        println!("WebSocket found signature: {}", signature);
+                        if let Some((symbol, amount, mint)) = self.detect_deposit(&rpc, &signature).await? {
+                            println!("Deposit detected: {} {}", amount, symbol);
+                            let user_email = self.pending_credits.lock().unwrap().remove(&signature);
+                            let watcher = Arc::new(self.clone_for_spawn());
+                            let sig_clone = signature.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = watcher.handle_deposit(&symbol, amount, &mint, user_email.as_deref()).await {
+                                    eprintln!("handle_deposit failed for {}: {}", sig_clone, e);
+                                } else {
+                                    let mut processed = watcher.processed.lock().unwrap();
+                                    processed.insert(sig_clone.clone());
+                                    let _ = fs::write("/data/processed_sigs.txt", processed.iter().cloned().collect::<Vec<_>>().join("\n"));
+                                    println!("Processed successfully: {}", sig_clone);
+                                }
+                            });
+                        } else {
+                            let mut processed = self.processed.lock().unwrap();
+                            processed.insert(signature);
+                        }
+                    }
+                }
             }
-            sleep(Duration::from_secs(5)).await;
+        }
+        Ok(())
+    }
+
+    // Helper so we can spawn without full Arc clone issues in the listener
+    fn clone_for_spawn(&self) -> SolanaWatcher {
+        SolanaWatcher {
+            rpc_url: self.rpc_url.clone(),
+            ws_url: self.ws_url.clone(),
+            deposit_address: self.deposit_address.clone(),
+            fee_wallet: Keypair::from_bytes(&self.fee_wallet.to_bytes()).expect("clone key"),
+            last_seen: Mutex::new(None),
+            processed: Mutex::new(self.processed.lock().unwrap().clone()),
+            http: Client::new(),
+            mint_to_symbol: self.mint_to_symbol.clone(),
+            pending_credits: Mutex::new(HashMap::new()),
         }
     }
 
@@ -161,7 +247,6 @@ impl SolanaWatcher {
                                 let mut processed = self.processed.lock().unwrap();
                                 processed.insert(signature.clone());
                                 let _ = fs::write("/data/processed_sigs.txt", processed.iter().cloned().collect::<Vec<_>>().join("\n"));
-                                // Store under the FORWARD signature so the FEE_ADD handler can match it
                                 self.pending_credits.lock().unwrap().insert(forward_sig, email.clone());
                                 println!("Forwarded {} SOL from {} to FEE_ADD", amount, email);
                             }
@@ -179,7 +264,6 @@ impl SolanaWatcher {
     async fn forward_to_fee_add(&self, rpc: &RpcClient, user_keypair: &Keypair, amount_sol: f64) -> Result<String, Box<dyn std::error::Error>> {
         let fee_pubkey = Pubkey::from_str(&self.deposit_address)?;
         let lamports = (amount_sol * 1_000_000_000.0) as u64;
-        // leave a small amount for fees
         let send_lamports = lamports.saturating_sub(5_000);
         if send_lamports == 0 {
             return Err("amount too small after fee reserve".into());
@@ -244,65 +328,10 @@ impl SolanaWatcher {
         Ok(None)
     }
 
-    async fn check_for_deposits(self: Arc<Self>, rpc: &RpcClient) -> Result<(), Box<dyn std::error::Error>> {
-        let pubkey = Pubkey::from_str(&self.deposit_address)?;
-        let signatures = rpc.get_signatures_for_address(&pubkey)?;
-
-        let mut last_seen = self.last_seen.lock().unwrap();
-
-        for sig in signatures.iter().take(5) {
-            let signature = &sig.signature;
-
-            {
-                let processed = self.processed.lock().unwrap();
-                if processed.contains(signature) {
-                    continue;
-                }
-            }
-
-            if let Some(ref last) = *last_seen {
-                if signature == last {
-                    break;
-                }
-            }
-
-            println!("Found signature: {}", signature);
-
-            if let Some((symbol, amount, mint)) = self.detect_deposit(rpc, signature).await? {
-                println!("Deposit detected: {} {}", amount, symbol);
-                let user_email = self.pending_credits.lock().unwrap().remove(signature);
-                let watcher = Arc::clone(&self);
-                let sig_clone = signature.to_string();
-                let symbol = symbol;
-                let mint = mint;
-                tokio::spawn(async move {
-                    if let Err(e) = watcher.handle_deposit(&symbol, amount, &mint, user_email.as_deref()).await {
-                        eprintln!("handle_deposit failed for {}: {}", sig_clone, e);
-                    } else {
-                        let mut processed = watcher.processed.lock().unwrap();
-                        processed.insert(sig_clone.clone());
-                        let _ = fs::write("/data/processed_sigs.txt", processed.iter().cloned().collect::<Vec<_>>().join("\n"));
-                        println!("Processed successfully: {}", sig_clone);
-                    }
-                });
-            } else {
-                let mut processed = self.processed.lock().unwrap();
-                processed.insert(signature.clone());
-            }
-        }
-
-        if let Some(newest) = signatures.first() {
-            *last_seen = Some(newest.signature.clone());
-        }
-
-        Ok(())
-    }
-
     async fn handle_deposit(&self, symbol: &str, amount: f64, mint: &str, user_email: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
         let usdc_amount = if symbol == "USDC" {
             amount
         } else {
-            // Leave 0.2% of the SOL on the deposit address for network fees
             let swap_amount = amount * 0.998;
             println!("Swapping 99.8% ({:.6} {}) — leaving 0.2% for fees", swap_amount, symbol);
             self.jupiter_swap(symbol, swap_amount, mint).await?
@@ -311,12 +340,10 @@ impl SolanaWatcher {
         println!("=== SWAP FUNCTION RETURNED ===");
         println!("USDC amount from quote: {:.6}", usdc_amount);
 
-        // 100% of USDC value is applied as shesaysyes.ca credits (no stored CRUX balance)
         let credit_value = usdc_amount;
         println!("Applying {:.6} shesaysyes.ca credits from deposit", credit_value);
 
         if let Some(email) = user_email {
-            // Call the credit endpoint
             let backend_url = std::env::var("BACKEND_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
             let body = json!({
                 "user_id": email,
@@ -393,7 +420,6 @@ impl SolanaWatcher {
             let sig = rpc.send_transaction(&tx)?;
             println!("Swap sent: {}", sig);
 
-            // Immediately mark the swap signature so it is not treated as a new deposit
             {
                 let mut processed = self.processed.lock().unwrap();
                 processed.insert(sig.to_string());
@@ -426,7 +452,6 @@ impl SolanaWatcher {
                 let actual_usdc = balance.ui_amount.unwrap_or(0.0);
                 println!("USDC balance after swap: {:.6} USDC", actual_usdc);
 
-                // Send the USDC to PAYMENT_ADD
                 if let Ok(payment_add) = std::env::var("PAYMENT_ADD") {
                     if let Ok(payment_pubkey) = Pubkey::from_str(&payment_add) {
                         let recipient_ata = Pubkey::find_program_address(
@@ -440,16 +465,15 @@ impl SolanaWatcher {
 
                         let raw_amount = (actual_usdc * 1_000_000.0) as u64;
                         if raw_amount > 0 {
-                            // SPL Token transfer instruction (index 3)
                             let mut data = vec![3u8];
                             data.extend_from_slice(&raw_amount.to_le_bytes());
 
                             let transfer_ix = Instruction {
                                 program_id: token_program,
                                 accounts: vec![
-                                    AccountMeta::new(ata, false),                    // source
-                                    AccountMeta::new(recipient_ata, false),          // destination
-                                    AccountMeta::new_readonly(self.fee_wallet.pubkey(), true), // authority
+                                    AccountMeta::new(ata, false),
+                                    AccountMeta::new(recipient_ata, false),
+                                    AccountMeta::new_readonly(self.fee_wallet.pubkey(), true),
                                 ],
                                 data,
                             };
@@ -568,22 +592,22 @@ impl SolanaWatcher {
 #[tokio::main]
 async fn main() {
     let rpc_url = std::env::var("HELIUS_RPC_URL").expect("HELIUS_RPC_URL not set");
+    let ws_url = std::env::var("HELIUS_WEBSOCKET").expect("HELIUS_WEBSOCKET not set");
     let fee_wallet_key = std::env::var("FEE_WALLET_KEY").expect("FEE_WALLET_KEY not set");
     let deposit_address = std::env::var("FEE_ADD").expect("FEE_ADD not set");
 
     let watcher = Arc::new(SolanaWatcher::new(
         &rpc_url,
+        &ws_url,
         &deposit_address,
         &fee_wallet_key,
     ));
 
-    // Bind a port so Render private service stays alive
     let port = std::env::var("PORT").unwrap_or_else(|_| "7879".to_string());
     let addr = format!("0.0.0.0:{}", port);
     let listener = TcpListener::bind(&addr).expect("failed to bind watcher port");
     println!("Watcher listening on {}", addr);
 
-    // Accept connections in a background thread; main loop continues
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             if let Ok(mut stream) = stream {
