@@ -113,7 +113,11 @@ pub fn credit_on_chain(user_address: &str, amount: f64) -> bool {
         Ok(s) => s,
         Err(_) => return false,
     };
-    let tx_line = format!("{}|deposit|{}|{}||\n", tip, user_address, amount);
+    let secret = std::env::var("DEPOSIT_SECRET").unwrap_or_default();
+    if secret.is_empty() {
+        return false;
+    }
+    let tx_line = format!("{}|deposit|{}|{}|{}|\n", tip, user_address, amount, secret);
     if stream.write_all(tx_line.as_bytes()).is_err() {
         return false;
     }
