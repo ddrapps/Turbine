@@ -139,7 +139,7 @@ impl SolanaWatcher {
         }
     }
 
-    async fn listen_deposits(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn listen_deposits(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let (ws_stream, _) = connect_async(&self.ws_url).await?;
         let (mut write, mut read) = ws_stream.split();
 
@@ -230,7 +230,7 @@ impl SolanaWatcher {
         }
     }
 
-    async fn check_user_deposits(&self, rpc: &RpcClient) -> Result<(), Box<dyn std::error::Error>> {
+    async fn check_user_deposits(&self, rpc: &RpcClient) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let user_keys = self.load_user_solana_keys().await;
         if user_keys.is_empty() {
             return Ok(());
@@ -280,7 +280,7 @@ impl SolanaWatcher {
         Ok(())
     }
 
-    async fn forward_to_fee_add(&self, rpc: &RpcClient, user_keypair: &Keypair, amount_sol: f64) -> Result<String, Box<dyn std::error::Error>> {
+    async fn forward_to_fee_add(&self, rpc: &RpcClient, user_keypair: &Keypair, amount_sol: f64) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let fee_pubkey = Pubkey::from_str(&self.deposit_address)?;
         let lamports = (amount_sol * 1_000_000_000.0) as u64;
         let send_lamports = lamports.saturating_sub(5_000);
@@ -307,7 +307,7 @@ impl SolanaWatcher {
         rpc: &RpcClient,
         signature: &str,
         address: &str,
-    ) -> Result<Option<(String, f64, String)>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<(String, f64, String)>, Box<dyn std::error::Error + Send + Sync>> {
         let sig = match signature.parse() {
             Ok(s) => s,
             Err(_) => return Ok(None),
@@ -358,7 +358,7 @@ impl SolanaWatcher {
         Ok(None)
     }
 
-    async fn handle_deposit(&self, symbol: &str, amount: f64, mint: &str, user_email: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    async fn handle_deposit(&self, symbol: &str, amount: f64, mint: &str, user_email: Option<&str>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let usdc_amount = if symbol == "USDC" {
             amount
         } else {
@@ -400,7 +400,7 @@ impl SolanaWatcher {
         Ok(())
     }
 
-    async fn jupiter_swap(&self, symbol: &str, amount: f64, input_mint: &str) -> Result<f64, Box<dyn std::error::Error>> {
+    async fn jupiter_swap(&self, symbol: &str, amount: f64, input_mint: &str) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
         let decimals = if symbol == "SOL" { 9 } else { 6 };
         let raw_amount = (amount * 10f64.powi(decimals)) as u64;
         let quote_url = format!(
@@ -537,7 +537,7 @@ impl SolanaWatcher {
         &self,
         rpc: &RpcClient,
         signature: &str,
-    ) -> Result<Option<(String, f64, String)>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<(String, f64, String)>, Box<dyn std::error::Error + Send + Sync>> {
         let sig = match signature.parse() {
             Ok(s) => s,
             Err(_) => return Ok(None),
