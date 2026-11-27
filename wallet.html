@@ -61,7 +61,7 @@
     </div>
 
     <div class="row">
-      <video src="/assets/loop.mp4" autoplay loop muted playsinline style="max-width:100%;border-radius:6px;"></video>
+      <video id="loop-video" src="/assets/loop.mp4" autoplay loop muted playsinline style="max-width:100%;border-radius:6px;"></video>
     </div>
   </div>
 
@@ -135,11 +135,10 @@
             const parts = getText.trim().split("|");
             myAddress = parts[0] || "";
             mySolanaAddress = parts[1] || "";
-            document.getElementById("login-box").style.display = "none";
-            document.getElementById("wallet-box").style.display = "block";
             document.getElementById("address").textContent = myAddress;
             document.getElementById("solana-address").textContent = mySolanaAddress;
             localStorage.setItem("horcrux_email", email);
+            showWallet();
             loadBalance();
           } else {
             document.getElementById("login-msg").textContent = getText;
@@ -156,11 +155,10 @@
             myPrivateKey = parts[0] || "";
             myAddress = parts[1] || "";
             mySolanaAddress = parts[2] || "";
-            document.getElementById("login-box").style.display = "none";
-            document.getElementById("wallet-box").style.display = "block";
             document.getElementById("address").textContent = myAddress;
             document.getElementById("solana-address").textContent = mySolanaAddress;
             localStorage.setItem("horcrux_email", email);
+            showWallet();
             loadBalance();
           } else {
             document.getElementById("login-msg").textContent = createText;
@@ -203,11 +201,10 @@
           myPrivateKey = parts[0];
           myAddress = parts[1];
           mySolanaAddress = parts[2] || "";
-          document.getElementById("confirm-box").style.display = "none";
-          document.getElementById("wallet-box").style.display = "block";
           document.getElementById("address").textContent = myAddress;
           document.getElementById("solana-address").textContent = mySolanaAddress;
           localStorage.setItem("horcrux_email", pendingEmail);
+          showWallet();
           loadBalance();
         } else {
           document.getElementById("confirm-msg").textContent = createText;
@@ -234,11 +231,10 @@
           myAddress = parts[0];
           mySolanaAddress = parts[1] || "";
           myPrivateKey = pk;
-          document.getElementById("returning-box").style.display = "none";
-          document.getElementById("wallet-box").style.display = "block";
           document.getElementById("address").textContent = myAddress;
           document.getElementById("solana-address").textContent = mySolanaAddress;
           localStorage.setItem("horcrux_email", pendingEmail);
+          showWallet();
           loadBalance();
         } else {
           document.getElementById("returning-msg").textContent = text;
@@ -246,6 +242,24 @@
       } catch (e) {
         document.getElementById("returning-msg").textContent = "Error: " + e;
       }
+    }
+
+    function startLoop() {
+      const v = document.getElementById("loop-video");
+      if (v) {
+        v.muted = true;
+        v.loop = true;
+        const p = v.play();
+        if (p && p.catch) p.catch(() => {});
+      }
+    }
+
+    function showWallet() {
+      document.getElementById("login-box").style.display = "none";
+      document.getElementById("confirm-box").style.display = "none";
+      document.getElementById("returning-box").style.display = "none";
+      document.getElementById("wallet-box").style.display = "block";
+      startLoop();
     }
 
     function copySolana() {
